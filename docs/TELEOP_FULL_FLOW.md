@@ -22,6 +22,9 @@ Windows/Ubuntu 分机命令、A–H 暂停点、URDF 限位提取和只读夹爪
 - 逐关节软限位和主从状态超时检查；
 - 发布目标预览，以及解锁后发布真实 ROS2 目标。
 
+Windows 每得到一套完整八通道数据才发送一次 UDP。ZLink2 实测完整轮询约
+58 ms，因此新数据约为 15–17 Hz；桥接不会把重复旧帧伪装成 8 ms 新数据。
+
 ### Ubuntu ROS2 执行层
 
 `servo_controller/safe_one_arm_servo` 只建立一条机械臂连接，完成：
@@ -29,6 +32,8 @@ Windows/Ubuntu 分机命令、A–H 暂停点、URDF 限位提取和只读夹爪
 - 按关节名称重新排序；
 - 七轴数量、NaN/Inf、软限位的第二次检查；
 - 每关节最大速度限制；
+- 每 8 ms（125 Hz）限速推进并调用 JAKA `servo_j/edg_servo_j`，
+  `step_num=1`；
 - 300 ms 命令看门狗；
 - 每次通过 SDK 重新读取真实关节状态；
 - 显式服务解锁和退出伺服模式。
@@ -46,10 +51,10 @@ ChangingTek）CTAG2F120，内部沿用历史驱动名 `ZX`，支持
 - `dry_run: true`
 - `calibration_complete: false`
 - `limits_configured: false`
+- `hardware_motion_authorized: false`
 - 关节比例为 0
 - 关节上下限尚未填写
 - `gripper_type: zx`，`gripper_model: CTAG2F120` 已确认；
-- `configuration_complete: false`
 - `configuration_complete: false`
 
 即使误调用解锁服务，程序也会返回失败。
@@ -85,6 +90,7 @@ robot_timer
 ```powershell
 cd E:\AAA__Github_Project\One-Arm-Teleoperation
 .\tools\run_zlink2_recorder.cmd `
+  --rate-hz 15 `
   --udp-target 192.168.50.2:5005 `
   --session-name network_dry_run
 ```
@@ -130,11 +136,24 @@ calibration_complete: true
 limits_configured: true
 ```
 
-第一轮仍保持 `dry_run: true`，只检查 `/teleop/target_preview`。
+第一轮仍保持桥接 `dry_run: true`、执行端
+`hardware_motion_authorized: false`，只检查 `/teleop/target_preview`。
 
 ## 6. 双重解锁
 
-真机配置完成且现场急停可用后，先启动执行端运动门：
+真机配置完成且现场急停可用后，明确设置：
+
+```yaml
+# bridge
+dry_run: false
+
+# executor
+dry_run: false
+hardware_motion_authorized: true
+control_rate_hz: 125.0
+```
+
+然后先启动执行端运动门：
 
 ```bash
 ros2 service call /right_arm/set_motion_enabled \

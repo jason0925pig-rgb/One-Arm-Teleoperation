@@ -24,13 +24,12 @@ ubuntu_preflight_report.txt
 build_report.txt
 right_arm_limits.txt
 
-# The upstream ManiSkill mirror is about 591 MB and is unrelated to the
-# Windows-to-Armstrong hardware path. Fetch it from `upstream` if simulation is
-# needed; keep the real-robot repository practical to clone on Ubuntu.
-src/simulation/mani_skill/
+# Prevent the removed upstream ROS1/simulation tree from being accidentally
+# copied back into this real-robot deployment repository.
+/src/
+/src/simulation/mani_skill/
 
-# Teacher/editor backup copies are retained locally for reference but are not
-# part of the supported build. The canonical legacy source remains tracked.
+# Ignore editor/teacher backup copies; the canonical sources remain tracked.
 servo_controller/src/*copy*.cpp
 servo_controller/src/*bak*.cpp
 servo_controller/src/*error*.cpp

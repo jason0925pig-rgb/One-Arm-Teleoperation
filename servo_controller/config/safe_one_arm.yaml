@@ -7,13 +7,18 @@ safe_one_arm_servo:
 
     # Safe defaults: SDK calls are simulated and all real motion is locked.
     dry_run: true
+    # This independent gate must remain false during network and readback tests.
+    # Set true only after limits/calibration are reviewed and the operator is
+    # ready to call the two explicit enable services.
+    hardware_motion_authorized: false
     limits_configured: false
     power_on_on_arm: false
     enable_robot_on_arm: false
     disable_robot_on_disarm: false
 
     command_timeout_seconds: 0.30
-    control_rate_hz: 50.0
+    # JAKA servo_j/edg_servo_j step_num=1 uses the 8 ms base period.
+    control_rate_hz: 125.0
     state_rate_hz: 20.0
 
     # Replace with manufacturer/URDF limits before setting limits_configured.

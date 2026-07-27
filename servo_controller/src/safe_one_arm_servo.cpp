@@ -27,6 +27,8 @@ public:
         robot_ip_ = declare_parameter<std::string>("robot_ip", "");
         robot_port_ = declare_parameter<int>("robot_port", 10020);
         dry_run_ = declare_parameter<bool>("dry_run", true);
+        hardware_motion_authorized_ =
+            declare_parameter<bool>("hardware_motion_authorized", false);
         limits_configured_ = declare_parameter<bool>("limits_configured", false);
         power_on_on_arm_ = declare_parameter<bool>("power_on_on_arm", false);
         enable_robot_on_arm_ = declare_parameter<bool>("enable_robot_on_arm", false);
@@ -34,7 +36,7 @@ public:
             declare_parameter<bool>("disable_robot_on_disarm", false);
         command_timeout_seconds_ =
             declare_parameter<double>("command_timeout_seconds", 0.30);
-        control_rate_hz_ = declare_parameter<double>("control_rate_hz", 50.0);
+        control_rate_hz_ = declare_parameter<double>("control_rate_hz", 125.0);
         state_rate_hz_ = declare_parameter<double>("state_rate_hz", 20.0);
         lower_limits_ =
             declare_parameter<std::vector<double>>("joint_lower_limits", {});
@@ -74,26 +76,30 @@ public:
         robot_.set_sim_mode(dry_run_);
         connected_ = connect_robot();
 
-        const auto control_period = std::chrono::duration<double>(
-            1.0 / std::max(1.0, control_rate_hz_));
-        const auto state_period = std::chrono::duration<double>(
-            1.0 / std::max(1.0, state_rate_hz_));
+        const auto control_period = std::chrono::microseconds(
+            static_cast<std::chrono::microseconds::rep>(
+                std::llround(1'000'000.0 / std::max(1.0, control_rate_hz_))));
+        const auto state_period = std::chrono::microseconds(
+            static_cast<std::chrono::microseconds::rep>(
+                std::llround(1'000'000.0 / std::max(1.0, state_rate_hz_))));
         control_timer_ = create_wall_timer(
-            std::chrono::duration_cast<std::chrono::milliseconds>(control_period),
+            control_period,
             std::bind(&SafeOneArmServo::control_tick, this));
         state_timer_ = create_wall_timer(
-            std::chrono::duration_cast<std::chrono::milliseconds>(state_period),
+            state_period,
             std::bind(&SafeOneArmServo::state_tick, this));
         status_timer_ = create_wall_timer(
             500ms, std::bind(&SafeOneArmServo::publish_status, this));
 
         RCLCPP_WARN(
             get_logger(),
-            "Safe one-arm node started: arm=%s dry_run=%d connected=%d. "
+            "Safe one-arm node started: arm=%s dry_run=%d connected=%d "
+            "control_period_us=%lld. "
             "It does not power, enable, or enter servo mode at startup.",
             arm_name_.c_str(),
             dry_run_,
-            connected_);
+            connected_,
+            static_cast<long long>(control_period.count()));
         if (!safety_configuration_valid_) {
             RCLCPP_ERROR(
                 get_logger(),
@@ -179,6 +185,12 @@ private:
             response->success = false;
             response->message =
                 "real limits/max velocities are not configured";
+            return;
+        }
+        if (!dry_run_ && !hardware_motion_authorized_) {
+            response->success = false;
+            response->message =
+                "hardware_motion_authorized is false; receive/readback testing only";
             return;
         }
 
@@ -335,9 +347,9 @@ private:
         }
         errno_t result = ERR_SUCC;
 #if defined(ARCH_ARM64)
-        result = robot_.servo_j(&command, MoveMode::ABS);
+        result = robot_.servo_j(&command, MoveMode::ABS, 1);
 #else
-        result = robot_.edg_servo_j(0, &command, MoveMode::ABS);
+        result = robot_.edg_servo_j(0, &command, MoveMode::ABS, 1);
         if (result == ERR_SUCC) {
             result = robot_.edg_send();
         }
@@ -394,6 +406,7 @@ private:
         stream
             << "arm=" << arm_name_
             << ";dry_run=" << dry_run_
+            << ";hardware_motion_authorized=" << hardware_motion_authorized_
             << ";connected=" << connected_
             << ";limits_configured=" << safety_configuration_valid_
             << ";motion_enabled=" << motion_enabled_
@@ -407,6 +420,7 @@ private:
     std::string robot_ip_;
     int robot_port_{};
     bool dry_run_{true};
+    bool hardware_motion_authorized_{false};
     bool limits_configured_{false};
     bool safety_configuration_valid_{false};
     bool power_on_on_arm_{false};
@@ -416,7 +430,7 @@ private:
     bool motion_enabled_{false};
     bool has_target_{false};
     double command_timeout_seconds_{0.30};
-    double control_rate_hz_{50.0};
+    double control_rate_hz_{125.0};
     double state_rate_hz_{20.0};
     std::vector<std::string> joint_names_;
     std::vector<double> lower_limits_;
