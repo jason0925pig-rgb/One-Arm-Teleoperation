@@ -1,0 +1,9 @@
+# 请求消息
+float64[] joint_positions  # 目标关节位置数组
+float64 speed             # 运动速度
+bool is_block            # 是否阻塞等待运动完成
+
+---
+# 响应消息
+bool success            # 运动是否成功
+string message          # 状态信息 

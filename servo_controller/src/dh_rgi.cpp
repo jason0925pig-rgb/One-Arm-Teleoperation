@@ -1,0 +1,54 @@
+ #include "dh_rgi.h"
+
+ DH_RGI::DH_RGI(int id, std::string Portname, int Baudrate):
+     DH_Modbus_Gripper(id,Portname, Baudrate)
+ {
+
+ }
+
+ DH_RGI::~DH_RGI()
+ {
+
+ }
+
+
+ bool DH_RGI::SetTargetRotation(int angle)
+ {
+      return WriteRegisterFunc(0x0105,angle);
+ }
+
+ bool DH_RGI::SetTargetRotationTorque(int torque)
+ {
+     return WriteRegisterFunc(0x0108,torque);
+ }
+
+ bool DH_RGI::SetTargetRotationSpeed(int speed)
+ {
+     return WriteRegisterFunc(0x0107,speed);
+ }
+
+
+ bool DH_RGI::GetCurrentRotation(int *curAngle)
+ {
+     return ReadRegisterFunc(0x0208,curAngle);
+ }
+
+ bool DH_RGI::GetCUrrentTargetRotationTorque(int *curTarRotTorque)
+ {
+     return ReadRegisterFunc(0x0108,curTarRotTorque);
+ }
+
+ bool DH_RGI::GetCurrentTargetRotationSpeed(int *curTarRotSpeed)
+ {
+     return ReadRegisterFunc(0x0107,curTarRotSpeed);
+ }
+
+ bool DH_RGI::GetRotationState(int *r_state)
+ {
+     return ReadRegisterFunc(0x020B,r_state);
+ }
+
+ bool DH_RGI::GetRotationInitializationState(int *ri_state)
+ {
+     return ReadRegisterFunc(0x020A,ri_state);
+ }

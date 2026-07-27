@@ -1,0 +1,194 @@
+{
+  "timestamp_utc": "2026-07-21T05:17:48.260834+00:00",
+  "port": "COM10",
+  "baudrate": 115200,
+  "requested_ids": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+  ],
+  "safety": {
+    "allowed_queries": [
+      "PVER",
+      "PRAD"
+    ],
+    "state_changing_commands_present": false
+  },
+  "confirmed_ids": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+  ],
+  "results": [
+    {
+      "servo_id": 0,
+      "confirmed": true,
+      "position_pulse": 2211,
+      "estimated_degrees": 230.985,
+      "version": {
+        "command": "#000PVER!",
+        "attempts": 1,
+        "raw_hex": "23 30 30 30 40 20 5a 4c 2d 5a 53 65 72 76 6f 5f 41 44 5f 43 42 4d 20 56 32 2e 31 2e 32 53 54 47 21 0d 0a",
+        "raw_text": "#000@ ZL-ZServo_AD_CBM V2.1.2STG!\r\n",
+        "non_echo_reply": true
+      },
+      "position": {
+        "command": "#000PRAD!",
+        "attempts": 1,
+        "raw_hex": "23 30 30 30 50 32 32 31 31 21",
+        "raw_text": "#000P2211!",
+        "non_echo_reply": true
+      }
+    },
+    {
+      "servo_id": 1,
+      "confirmed": true,
+      "position_pulse": 1746,
+      "estimated_degrees": 168.21,
+      "version": {
+        "command": "#001PVER!",
+        "attempts": 1,
+        "raw_hex": "23 30 30 31 40 20 5a 4c 2d 5a 53 65 72 76 6f 5f 41 44 5f 43 42 4d 20 56 32 2e 31 2e 32 53 54 47 21 0d 0a",
+        "raw_text": "#001@ ZL-ZServo_AD_CBM V2.1.2STG!\r\n",
+        "non_echo_reply": true
+      },
+      "position": {
+        "command": "#001PRAD!",
+        "attempts": 1,
+        "raw_hex": "23 30 30 31 50 31 37 34 36 21",
+        "raw_text": "#001P1746!",
+        "non_echo_reply": true
+      }
+    },
+    {
+      "servo_id": 2,
+      "confirmed": true,
+      "position_pulse": 551,
+      "estimated_degrees": 6.885,
+      "version": {
+        "command": "#002PVER!",
+        "attempts": 1,
+        "raw_hex": "23 30 30 32 40 20 5a 4c 2d 5a 53 65 72 76 6f 5f 41 44 5f 43 42 4d 20 56 32 2e 31 2e 32 53 54 47 21 0d 0a",
+        "raw_text": "#002@ ZL-ZServo_AD_CBM V2.1.2STG!\r\n",
+        "non_echo_reply": true
+      },
+      "position": {
+        "command": "#002PRAD!",
+        "attempts": 1,
+        "raw_hex": "23 30 30 32 50 30 35 35 31 21",
+        "raw_text": "#002P0551!",
+        "non_echo_reply": true
+      }
+    },
+    {
+      "servo_id": 3,
+      "confirmed": true,
+      "position_pulse": 1067,
+      "estimated_degrees": 76.545,
+      "version": {
+        "command": "#003PVER!",
+        "attempts": 1,
+        "raw_hex": "23 30 30 33 40 20 5a 4c 2d 5a 53 65 72 76 6f 5f 41 44 5f 43 42 4d 20 56 32 2e 31 2e 32 53 54 47 21 0d 0a",
+        "raw_text": "#003@ ZL-ZServo_AD_CBM V2.1.2STG!\r\n",
+        "non_echo_reply": true
+      },
+      "position": {
+        "command": "#003PRAD!",
+        "attempts": 1,
+        "raw_hex": "23 30 30 33 50 31 30 36 37 21",
+        "raw_text": "#003P1067!",
+        "non_echo_reply": true
+      }
+    },
+    {
+      "servo_id": 4,
+      "confirmed": true,
+      "position_pulse": 2247,
+      "estimated_degrees": 235.845,
+      "version": {
+        "command": "#004PVER!",
+        "attempts": 1,
+        "raw_hex": "23 30 30 34 40 20 5a 4c 2d 5a 53 65 72 76 6f 5f 41 44 5f 43 42 4d 20 56 32 2e 31 2e 32 53 54 47 21 0d 0a",
+        "raw_text": "#004@ ZL-ZServo_AD_CBM V2.1.2STG!\r\n",
+        "non_echo_reply": true
+      },
+      "position": {
+        "command": "#004PRAD!",
+        "attempts": 1,
+        "raw_hex": "23 30 30 34 50 32 32 34 37 21",
+        "raw_text": "#004P2247!",
+        "non_echo_reply": true
+      }
+    },
+    {
+      "servo_id": 5,
+      "confirmed": true,
+      "position_pulse": 1566,
+      "estimated_degrees": 143.91,
+      "version": {
+        "command": "#005PVER!",
+        "attempts": 1,
+        "raw_hex": "23 30 30 35 40 20 5a 4c 2d 5a 53 65 72 76 6f 5f 41 44 5f 43 42 4d 20 56 32 2e 31 2e 32 53 54 47 21 0d 0a",
+        "raw_text": "#005@ ZL-ZServo_AD_CBM V2.1.2STG!\r\n",
+        "non_echo_reply": true
+      },
+      "position": {
+        "command": "#005PRAD!",
+        "attempts": 1,
+        "raw_hex": "23 30 30 35 50 31 35 36 36 21",
+        "raw_text": "#005P1566!",
+        "non_echo_reply": true
+      }
+    },
+    {
+      "servo_id": 6,
+      "confirmed": true,
+      "position_pulse": 2212,
+      "estimated_degrees": 231.12,
+      "version": {
+        "command": "#006PVER!",
+        "attempts": 1,
+        "raw_hex": "23 30 30 36 40 20 5a 4c 2d 5a 53 65 72 76 6f 5f 41 44 5f 43 42 4d 20 56 32 2e 31 2e 32 53 54 47 21 0d 0a",
+        "raw_text": "#006@ ZL-ZServo_AD_CBM V2.1.2STG!\r\n",
+        "non_echo_reply": true
+      },
+      "position": {
+        "command": "#006PRAD!",
+        "attempts": 1,
+        "raw_hex": "23 30 30 36 50 32 32 31 32 21",
+        "raw_text": "#006P2212!",
+        "non_echo_reply": true
+      }
+    },
+    {
+      "servo_id": 7,
+      "confirmed": true,
+      "position_pulse": 671,
+      "estimated_degrees": 23.085,
+      "version": {
+        "command": "#007PVER!",
+        "attempts": 1,
+        "raw_hex": "23 30 30 37 40 20 5a 4c 2d 5a 53 65 72 76 6f 5f 41 44 5f 43 42 4d 20 56 32 2e 31 2e 32 53 54 47 21 0d 0a",
+        "raw_text": "#007@ ZL-ZServo_AD_CBM V2.1.2STG!\r\n",
+        "non_echo_reply": true
+      },
+      "position": {
+        "command": "#007PRAD!",
+        "attempts": 1,
+        "raw_hex": "23 30 30 37 50 30 36 37 31 21",
+        "raw_text": "#007P0671!",
+        "non_echo_reply": true
+      }
+    }
+  ]
+}

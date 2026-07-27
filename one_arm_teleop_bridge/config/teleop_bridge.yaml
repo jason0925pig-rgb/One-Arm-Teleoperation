@@ -1,0 +1,24 @@
+udp_leader_bridge:
+  ros__parameters:
+    bind_host: "0.0.0.0"
+    bind_port: 5005
+    expected_source_ip: ""
+    # Project decision confirmed on 2026-07-27: use the Armstrong right arm.
+    arm_name: "right"
+
+    # These two gates intentionally block real command publication.
+    dry_run: true
+    calibration_complete: false
+
+    leader_period_pulses: 2500
+    max_leader_step_pulses: 800.0
+    packet_timeout_seconds: 0.30
+    follower_state_timeout_seconds: 0.30
+
+    # Replace only after one-joint-at-a-time calibration.
+    joint_signs: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    scale_rad_per_pulse: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+    # Must be replaced with the actual Armstrong/JAKA safe limits.
+    joint_lower_limits: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    joint_upper_limits: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]

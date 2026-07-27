@@ -1,0 +1,103 @@
+{
+  "timestamp_utc": "2026-07-23T04:10:48.575044+00:00",
+  "port": "COM10",
+  "baudrate": 115200,
+  "requested_ids": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+  ],
+  "label_sequence": [
+    "joint_1",
+    "joint_2",
+    "joint_3",
+    "joint_4",
+    "joint_5",
+    "joint_6",
+    "joint_7",
+    "gripper"
+  ],
+  "detection": {
+    "minimum_total_travel_pulses": 150,
+    "dominance_ratio": 1.5,
+    "observation_seconds": 5.0,
+    "per_scan_noise_floor_pulses": 2
+  },
+  "mapping": {
+    "joint_1": {
+      "servo_id": 0,
+      "detection_delta_pulses": -14,
+      "cumulative_travel_pulses": 3486,
+      "observation_seconds": 5.0,
+      "pulse_when_identified": 2013,
+      "approx_degrees_when_identified": 204.255
+    },
+    "joint_2": {
+      "servo_id": 1,
+      "detection_delta_pulses": -58,
+      "cumulative_travel_pulses": 3418,
+      "observation_seconds": 5.0,
+      "pulse_when_identified": 1251,
+      "approx_degrees_when_identified": 101.385
+    },
+    "joint_3": {
+      "servo_id": 2,
+      "detection_delta_pulses": -436,
+      "cumulative_travel_pulses": 3143,
+      "observation_seconds": 5.0,
+      "pulse_when_identified": 508,
+      "approx_degrees_when_identified": 1.08
+    },
+    "joint_4": {
+      "servo_id": 3,
+      "detection_delta_pulses": 69,
+      "cumulative_travel_pulses": 3301,
+      "observation_seconds": 5.0,
+      "pulse_when_identified": 1201,
+      "approx_degrees_when_identified": 94.635
+    },
+    "joint_5": {
+      "servo_id": 4,
+      "detection_delta_pulses": 403,
+      "cumulative_travel_pulses": 10722,
+      "observation_seconds": 5.0,
+      "pulse_when_identified": 990,
+      "approx_degrees_when_identified": 66.15
+    },
+    "joint_6": {
+      "servo_id": 5,
+      "detection_delta_pulses": -437,
+      "cumulative_travel_pulses": 2913,
+      "observation_seconds": 5.0,
+      "pulse_when_identified": 946,
+      "approx_degrees_when_identified": 60.21
+    },
+    "joint_7": {
+      "servo_id": 6,
+      "detection_delta_pulses": -474,
+      "cumulative_travel_pulses": 9516,
+      "observation_seconds": 5.0,
+      "pulse_when_identified": 1903,
+      "approx_degrees_when_identified": 189.405
+    },
+    "gripper": {
+      "servo_id": 7,
+      "detection_delta_pulses": 916,
+      "cumulative_travel_pulses": 10512,
+      "observation_seconds": 5.0,
+      "pulse_when_identified": 916,
+      "approx_degrees_when_identified": 56.16
+    }
+  },
+  "notes": {
+    "normal_commands": [
+      "PRAD"
+    ],
+    "pulse_to_degrees": "(pulse - 500) / 2000 * 270; provisional only"
+  }
+}

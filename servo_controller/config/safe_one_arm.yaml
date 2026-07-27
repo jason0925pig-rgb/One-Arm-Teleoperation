@@ -1,0 +1,44 @@
+safe_one_arm_servo:
+  ros__parameters:
+    # Project decision confirmed on 2026-07-27: use the Armstrong right arm.
+    arm_name: "right"
+    robot_ip: "192.168.2.226"
+    robot_port: 10020
+
+    # Safe defaults: SDK calls are simulated and all real motion is locked.
+    dry_run: true
+    limits_configured: false
+    power_on_on_arm: false
+    enable_robot_on_arm: false
+    disable_robot_on_disarm: false
+
+    command_timeout_seconds: 0.30
+    control_rate_hz: 50.0
+    state_rate_hz: 20.0
+
+    # Replace with manufacturer/URDF limits before setting limits_configured.
+    joint_lower_limits: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    joint_upper_limits: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+    # Start conservatively, then validate on the real robot.
+    max_velocity_rad_s: [0.10, 0.10, 0.10, 0.10, 0.10, 0.10, 0.10]
+
+safe_gripper_controller:
+  ros__parameters:
+    arm_name: "right"
+    # Confirmed hardware: ChangingTek/ZhiXing CTAG2F120.
+    # "zx" is the historical internal driver name for the ZhiXing protocol.
+    gripper_type: "zx"
+    gripper_model: "CTAG2F120"
+    port: "/dev/ttyUSB0"
+    slave_id: 1
+    baudrate: 115200
+    dry_run: true
+    # Still locked until the serial path, register map and safe endpoints are
+    # confirmed with the read-only feedback probe.
+    configuration_complete: false
+    open_position: 0
+    closed_position: 0
+    speed: 20
+    force: 20
+    movement_timeout_seconds: 2.0

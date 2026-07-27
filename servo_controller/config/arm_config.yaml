@@ -1,0 +1,10 @@
+# 机械臂配置
+left_arm:
+  ip: "192.168.2.225"   # 左臂IP地址
+  port: 10010            # 左臂端口
+  end_effector: "none"   # 左臂末端类型 (none, inspire_hand, dh_gripper,zx_gripper)
+
+right_arm:
+  ip: "192.168.2.226"   # 右臂IP地址
+  port: 10020            # 右臂端口
+  end_effector: "zx_gripper"  # 已确认：知行 CTAG2F120（旧配置，仅作参考）

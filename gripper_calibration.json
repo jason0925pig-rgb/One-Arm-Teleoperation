@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "status": "provisional_playback_verified",
+  "source_recording": "recordings/20260723_084332_gripper_gesture_calibration",
+  "encoder": {
+    "period_pulses": 2500,
+    "opening_direction": "increasing_unwrapped"
+  },
+  "references": {
+    "closed_unwrapped_pulse": 2347,
+    "open_unwrapped_pulse": 3297,
+    "notes": "Closed reference is the midpoint of the two comfortable closed holds (2320 and 2373); open hold was 3296-3298 after unwrap."
+  },
+  "state_machine": {
+    "close_at_or_below_unwrapped_pulse": 2650,
+    "open_at_or_above_unwrapped_pulse": 3000,
+    "middle_band_behavior": "hold_previous_state",
+    "debounce_frames": 3,
+    "expected_sample_rate_hz": 10.0
+  },
+  "follower_policy": {
+    "open_command": "constant_speed_until_open_limit",
+    "close_command": "constant_speed_until_contact_force_or_close_limit",
+    "implemented_on_windows_leader": false,
+    "notes": "Follower motion, force/contact detection, limits and timeouts belong in the Armstrong Linux safety adapter."
+  }
+}
