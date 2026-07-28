@@ -461,18 +461,13 @@ private:
                 maximum_difference);
 #if !defined(ARCH_ARM64)
             JointValue edg_feedback_0{};
-            JointValue edg_feedback_1{};
             CartesianPose edg_pose_0{};
-            CartesianPose edg_pose_1{};
             const errno_t edg_result_0 =
                 robot_.edg_get_stat(0, &edg_feedback_0, &edg_pose_0);
-            const errno_t edg_result_1 =
-                robot_.edg_get_stat(1, &edg_feedback_1, &edg_pose_1);
             RCLCPP_INFO(
                 get_logger(),
                 "Read-only EDG feedback comparison: "
-                "index0_result=%d index0_joint=[%.6f, %.6f, %.6f, %.6f, %.6f, %.6f, %.6f]; "
-                "index1_result=%d index1_joint=[%.6f, %.6f, %.6f, %.6f, %.6f, %.6f, %.6f]. "
+                "index0_result=%d index0_joint=[%.6f, %.6f, %.6f, %.6f, %.6f, %.6f, %.6f]. "
                 "No EDG send/servo/power/enable call was made.",
                 edg_result_0,
                 edg_feedback_0.jVal[0],
@@ -481,15 +476,7 @@ private:
                 edg_feedback_0.jVal[3],
                 edg_feedback_0.jVal[4],
                 edg_feedback_0.jVal[5],
-                edg_feedback_0.jVal[6],
-                edg_result_1,
-                edg_feedback_1.jVal[0],
-                edg_feedback_1.jVal[1],
-                edg_feedback_1.jVal[2],
-                edg_feedback_1.jVal[3],
-                edg_feedback_1.jVal[4],
-                edg_feedback_1.jVal[5],
-                edg_feedback_1.jVal[6]);
+                edg_feedback_0.jVal[6]);
 #endif
             feedback_source_logged_ = true;
         }
