@@ -87,7 +87,7 @@ void ZX_gripper::enable(bool enable)
 
 void ZX_gripper::set_temp_position_mm(int position_mm)
 {
-    if (position_mm < 0 || position_mm > 0xFFFFFFFF)
+    if (position_mm < 0)
     {
         throw std::invalid_argument("position_mm must be within 0..0xFFFFFFFF");
     }

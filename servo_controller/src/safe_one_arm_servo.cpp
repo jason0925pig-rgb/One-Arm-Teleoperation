@@ -39,11 +39,14 @@ public:
         control_rate_hz_ = declare_parameter<double>("control_rate_hz", 125.0);
         state_rate_hz_ = declare_parameter<double>("state_rate_hz", 20.0);
         lower_limits_ =
-            declare_parameter<std::vector<double>>("joint_lower_limits", {});
+            declare_parameter<std::vector<double>>(
+                "joint_lower_limits", std::vector<double>{});
         upper_limits_ =
-            declare_parameter<std::vector<double>>("joint_upper_limits", {});
+            declare_parameter<std::vector<double>>(
+                "joint_upper_limits", std::vector<double>{});
         max_velocity_ =
-            declare_parameter<std::vector<double>>("max_velocity_rad_s", {});
+            declare_parameter<std::vector<double>>(
+                "max_velocity_rad_s", std::vector<double>{});
 
         for (int index = 1; index <= 7; ++index) {
             joint_names_.push_back(

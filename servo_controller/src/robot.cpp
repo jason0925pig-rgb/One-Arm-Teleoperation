@@ -207,14 +207,17 @@ errno_t Robot::kine_inverse(const JointValue *ref_pos, const CartesianPose *cart
 }
 #endif
 
-errno_t Robot::servo_j(const JointValue *joint_pos, MoveMode move_mode) {
+errno_t Robot::servo_j(
+    const JointValue *joint_pos,
+    MoveMode move_mode,
+    unsigned int step_num) {
     if (sim_mode_){
         std::cout << "[sim mode]::servo j" << std::endl;
         joint_pos_current_sim_ = *joint_pos;
         return 0;
     }
     else
-        return jaka_robot_.servo_j(joint_pos, move_mode);
+        return jaka_robot_.servo_j(joint_pos, move_mode, step_num);
 }
  
 errno_t Robot::servo_move_use_joint_LPF(double cutoffFreq){
@@ -227,13 +230,18 @@ errno_t Robot::servo_move_use_joint_LPF(double cutoffFreq){
 }
 
 #if !defined(ARCH_ARM64)
-errno_t Robot::edg_servo_j(unsigned char robot_index, const JointValue *joint_pos, MoveMode move_mode){
+errno_t Robot::edg_servo_j(
+    unsigned char robot_index,
+    const JointValue *joint_pos,
+    MoveMode move_mode,
+    unsigned int step_num) {
     if (sim_mode_){
         std::cout << "[sim mode]::servo j" << std::endl;
         return 0;
     }
     else
-        return jaka_robot_.edg_servo_j(robot_index, joint_pos,move_mode);
+        return jaka_robot_.edg_servo_j(
+            robot_index, joint_pos, move_mode, step_num);
 
 }
 errno_t Robot::edg_send(){
@@ -295,7 +303,13 @@ void Robot::Add_Signal()
     sign_info_angles[7].sig_type = 3;
     for (int i = 0; i < 8; i++)
     {
-        int ret = jaka_robot_.add_tio_rs_signal(sign_info_angles[i]);
+        const int result = jaka_robot_.add_tio_rs_signal(sign_info_angles[i]);
+        if (result != ERR_SUCC)
+        {
+            std::cerr
+                << "add_tio_rs_signal failed at index " << i
+                << ", error=" << result << std::endl;
+        }
     }
 }
 
@@ -303,7 +317,6 @@ void Robot::Add_Signal()
 // 更改485通道二的通讯模式,手的通讯模式是modbus rtu
 errno_t Robot::change_mode()
 {
-    int ret;
     /*获取通道1的通信协议
     int chn_id=0;
     int chn_mode;
@@ -377,4 +390,3 @@ void Robot::write_SeriesPort_modbus(uint16_t angle_1, uint16_t angle_2, uint16_t
     int ret = jaka_robot_.send_tio_rs_command(1, data, sizeof(data));
     std::cout << "ret   " << ret << std::endl;
 }
-

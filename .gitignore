@@ -23,6 +23,7 @@ rosbag2_*/
 ubuntu_preflight_report.txt
 build_report.txt
 right_arm_limits.txt
+/Ubuntu_ROS2
 
 # Prevent the removed upstream ROS1/simulation tree from being accidentally
 # copied back into this real-robot deployment repository.

@@ -90,7 +90,8 @@ E:\AAA__Github_Project\One-Arm-Teleoperation\recordings\<时间_名称>\
 首次下载：
 
 ```bash
-cd ~
+mkdir -p ~/onearm_teleop
+cd ~/onearm_teleop
 git clone https://github.com/jason0925pig-rgb/One-Arm-Teleoperation.git
 cd One-Arm-Teleoperation
 git status
@@ -100,7 +101,7 @@ git log -1 --oneline
 以后 Windows 推送了修改，Ubuntu 在工作区干净时更新：
 
 ```bash
-cd ~/One-Arm-Teleoperation
+cd ~/onearm_teleop/One-Arm-Teleoperation
 git pull --ff-only origin main
 ```
 
@@ -122,14 +123,20 @@ ls /opt/ros
 uname -m
 ```
 
-将 `<ROS_DISTRO>` 替换成实际目录名，例如 `humble`：
+当前上位机已经确认是 Ubuntu 24.04、ROS2 Jazzy、x86_64，项目路径是
+`/home/tele/onearm_teleop/One-Arm-Teleoperation`，直接执行：
 
 ```bash
-source /opt/ros/<ROS_DISTRO>/setup.bash
-cd ~/One-Arm-Teleoperation
+source /opt/ros/jazzy/setup.bash
+cd ~/onearm_teleop/One-Arm-Teleoperation
 
 sudo apt update
 sudo apt install python3-colcon-common-extensions python3-rosdep libmodbus-dev
+
+if [ ! -f /etc/ros/rosdep/sources.list.d/20-default.list ]; then
+  sudo rosdep init
+fi
+rosdep update
 
 rosdep install \
   --from-paths servo_controller one_arm_teleop_bridge \
@@ -173,8 +180,8 @@ ros2 pkg executables one_arm_teleop_bridge
 Ubuntu 终端 U1：
 
 ```bash
-source /opt/ros/<ROS_DISTRO>/setup.bash
-cd ~/One-Arm-Teleoperation
+source /opt/ros/jazzy/setup.bash
+cd ~/onearm_teleop/One-Arm-Teleoperation
 source install/setup.bash
 ros2 launch one_arm_teleop_bridge udp_leader_bridge.launch.py
 ```
@@ -182,8 +189,8 @@ ros2 launch one_arm_teleop_bridge udp_leader_bridge.launch.py
 Ubuntu 终端 U2：
 
 ```bash
-source /opt/ros/<ROS_DISTRO>/setup.bash
-cd ~/One-Arm-Teleoperation
+source /opt/ros/jazzy/setup.bash
+cd ~/onearm_teleop/One-Arm-Teleoperation
 source install/setup.bash
 ros2 topic echo /teleop/leader_pulses
 ```
@@ -233,12 +240,12 @@ ros2 topic hz /teleop/leader_pulses
 Ubuntu 终端 U1：
 
 ```bash
-source /opt/ros/<ROS_DISTRO>/setup.bash
-cd ~/One-Arm-Teleoperation
+source /opt/ros/jazzy/setup.bash
+cd ~/onearm_teleop/One-Arm-Teleoperation
 source install/setup.bash
 
 ros2 run servo_controller safe_one_arm_servo --ros-args \
-  --params-file "$HOME/One-Arm-Teleoperation/servo_controller/config/safe_one_arm.yaml" \
+  --params-file "$HOME/onearm_teleop/One-Arm-Teleoperation/servo_controller/config/safe_one_arm.yaml" \
   -p dry_run:=false \
   -p hardware_motion_authorized:=false \
   -p limits_configured:=false \
@@ -265,8 +272,8 @@ ros2 run servo_controller safe_one_arm_servo --ros-args \
 Ubuntu 终端 U2：
 
 ```bash
-source /opt/ros/<ROS_DISTRO>/setup.bash
-source ~/One-Arm-Teleoperation/install/setup.bash
+source /opt/ros/jazzy/setup.bash
+source ~/onearm_teleop/One-Arm-Teleoperation/install/setup.bash
 
 ros2 topic echo --once /right_arm/joint_states
 ros2 topic echo --once /right_arm/safety_status
@@ -442,7 +449,7 @@ git push origin main
 Ubuntu 拉取：
 
 ```bash
-cd ~/One-Arm-Teleoperation
+cd ~/onearm_teleop/One-Arm-Teleoperation
 git status
 git pull --ff-only origin main
 colcon build --symlink-install \

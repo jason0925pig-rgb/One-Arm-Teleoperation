@@ -77,9 +77,16 @@ class Robot {
 #else
         errno_t kine_inverse(const JointValue *ref_pos, const CartesianPose *cartesian_pose, JointValue *joint_pos);
 #endif
-        errno_t servo_j(const JointValue *joint_pos, MoveMode move_mode);
+        errno_t servo_j(
+            const JointValue *joint_pos,
+            MoveMode move_mode,
+            unsigned int step_num = 1);
 #if !defined(ARCH_ARM64)
-        errno_t edg_servo_j(unsigned char robot_index, const JointValue *joint_pos, MoveMode move_mode);
+        errno_t edg_servo_j(
+            unsigned char robot_index,
+            const JointValue *joint_pos,
+            MoveMode move_mode,
+            unsigned int step_num = 1);
         errno_t edg_send();
 #endif
         errno_t servo_move_use_joint_LPF(double cutoffFreq);
