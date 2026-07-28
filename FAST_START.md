@@ -34,6 +34,7 @@ Ubuntu：收到新数据后做映射、限位和看门狗检查
 - 桥接层 `dry_run: true`
 - 桥接层 `calibration_complete: false`
 - 执行层 `limits_configured: false`
+- 执行层 `hardware_power_authorized: false`
 - 执行层 `hardware_motion_authorized: false`
 - 执行层 `motion_enabled: false`
 - 启动时不自动上电、不自动使能、不自动进入伺服模式
@@ -338,6 +339,7 @@ source install/setup.bash
 ros2 run servo_controller safe_one_arm_servo --ros-args \
   --params-file "$HOME/onearm_teleop/One-Arm-Teleoperation/servo_controller/config/safe_one_arm.yaml" \
   -p dry_run:=false \
+  -p hardware_power_authorized:=false \
   -p hardware_motion_authorized:=false \
   -p limits_configured:=false \
   -p power_on_on_arm:=false \
@@ -369,6 +371,7 @@ source ~/onearm_teleop/One-Arm-Teleoperation/install/setup.bash
 
 ros2 topic echo --once /right_arm/joint_states
 ros2 topic echo --once /right_arm/safety_status
+ros2 topic echo --once /right_arm/powered_on
 ros2 topic echo --once /right_arm/motion_enabled
 ```
 
@@ -386,6 +389,80 @@ ros2 topic echo --once /right_arm/motion_enabled
 3. Armstrong 控制器的实际 IP 和端口。
 
 不要调用 `/right_arm/set_motion_enabled`。
+
+### 5.3 只给右臂驱动上电，不使能、不运动
+
+仅当现场人员同意、机械臂周围清空、急停可立即触及时执行。该阶段不要求七轴
+限位已经配置，因为程序不会开启运动门。
+
+先用 `Ctrl+C` 停止 U1 的只读节点，再重新启动；这一轮只打开独立的上电授权：
+
+```bash
+source /opt/ros/jazzy/setup.bash
+cd ~/onearm_teleop/One-Arm-Teleoperation
+source install/setup.bash
+
+ros2 run servo_controller safe_one_arm_servo --ros-args \
+  --params-file "$HOME/onearm_teleop/One-Arm-Teleoperation/servo_controller/config/safe_one_arm.yaml" \
+  -p dry_run:=false \
+  -p hardware_power_authorized:=true \
+  -p hardware_motion_authorized:=false \
+  -p limits_configured:=false \
+  -p power_on_on_arm:=false \
+  -p enable_robot_on_arm:=false
+```
+
+节点启动本身仍然只登录和读取。U2 先确认服务存在及状态安全：
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source ~/onearm_teleop/One-Arm-Teleoperation/install/setup.bash
+
+ros2 service list | grep /right_arm/set_powered_on
+ros2 topic echo --once /right_arm/safety_status
+```
+
+只有状态同时满足以下条件时，服务才允许调用 JAKA `power_on()`：
+
+- `feedback_valid=1`
+- `robot_socket_connected=1`
+- `robot_enabled=0`
+- `robot_emergency_stop=0`
+- `robot_protective_stop=0`
+- `robot_error_code=0`
+- `motion_enabled=0`
+
+确认后只调用上电服务：
+
+```bash
+ros2 service call /right_arm/set_powered_on \
+  std_srvs/srv/SetBool "{data: true}"
+```
+
+该服务不会调用 `clear_error`、`enable_robot`、`servo_move_enable` 或任何关节运动
+接口。等待一秒后检查：
+
+```bash
+ros2 topic echo --once /right_arm/powered_on
+ros2 topic echo --once /right_arm/safety_status
+ros2 topic echo --once /right_arm/joint_states
+ros2 topic echo --once /right_arm/motion_enabled
+```
+
+预期 `robot_powered_on=1`、`robot_enabled=0`、`motion_enabled=0`，七个关节位置应
+与机器人实际姿态一致。检查结束后，在机器人仍未使能时软件下电：
+
+```bash
+ros2 service call /right_arm/set_powered_on \
+  std_srvs/srv/SetBool "{data: false}"
+```
+
+如果机器人已经使能或运动门已打开，程序会拒绝直接 `power_off`，避免突然掉电。
+
+### 暂停点 D3：仅上电反馈
+
+发送上电服务响应、四个 `--once` 输出和 U1 新日志。不要调用
+`/right_arm/set_motion_enabled`。
 
 ## 6. 得到真机参数
 
@@ -453,6 +530,7 @@ calibration_complete: true
 # servo_controller/config/safe_one_arm.yaml
 dry_run: false
 limits_configured: true
+hardware_power_authorized: false
 hardware_motion_authorized: false
 ```
 
@@ -492,6 +570,7 @@ q_target = q0 + sign × scale × (p - p0)
 dry_run: false
 
 # servo_controller/config/safe_one_arm.yaml
+hardware_power_authorized: false
 hardware_motion_authorized: true
 ```
 

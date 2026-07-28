@@ -36,6 +36,7 @@ Windows 每得到一套完整八通道数据才发送一次 UDP。ZLink2 实测�
   `step_num=1`；
 - 300 ms 命令看门狗；
 - 每次通过 SDK 重新读取真实关节状态；
+- 独立、显式且默认锁定的驱动上电服务；
 - 显式服务解锁和退出伺服模式。
 
 它不会在启动时自动上电、使能或进入伺服模式。
@@ -51,6 +52,7 @@ ChangingTek）CTAG2F120，内部沿用历史驱动名 `ZX`，支持
 - `dry_run: true`
 - `calibration_complete: false`
 - `limits_configured: false`
+- `hardware_power_authorized: false`
 - `hardware_motion_authorized: false`
 - 关节比例为 0
 - 关节上下限尚未填写
@@ -107,6 +109,18 @@ ros2 topic echo /right_arm/joint_states
 
 此阶段机器人不会运动。
 
+### 4.1 独立的仅上电诊断
+
+`/right_arm/set_powered_on` 与运动授权完全分离。只有启动参数显式设置
+`hardware_power_authorized: true`，并且控制器反馈新鲜、通信正常、急停和保护停
+未触发、错误码为零、机器人未使能时，`{data: true}` 才会调用一次 JAKA
+`power_on()`。
+
+它不会清错、使能、进入伺服模式或发送关节目标，也不要求先填写关节限位。上电
+后通过 `/right_arm/powered_on`、`/right_arm/safety_status` 和
+`/right_arm/joint_states` 核对状态。`{data: false}` 只允许在机器人未使能且
+运动门关闭时执行。
+
 ## 5. 真机标定前必须填写
 
 编辑：
@@ -149,6 +163,7 @@ dry_run: false
 
 # executor
 dry_run: false
+hardware_power_authorized: false
 hardware_motion_authorized: true
 control_rate_hz: 125.0
 ```

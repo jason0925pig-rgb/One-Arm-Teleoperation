@@ -46,6 +46,7 @@ Windows 不能每 8 ms 产生一套新的八电机数据：115200 波特率下�
 - `dry_run: true`
 - `calibration_complete: false`
 - `limits_configured: false`
+- `hardware_power_authorized: false`
 - `hardware_motion_authorized: false`
 - 主从比例为 0，真实七轴限位尚未填写
 - 夹爪 `configuration_complete: false`
@@ -62,9 +63,10 @@ Windows 不能每 8 ms 产生一套新的八电机数据：115200 波特率下�
 2. GitHub 克隆到 Ubuntu；
 3. Ubuntu 只接收并打印 UDP；
 4. 只读登录 Armstrong，核对七轴反馈；
-5. 回填真实限位、方向、比例和夹爪端点；
-6. 保持 `dry_run` 做目标预览；
-7. 最后才授权并显式解锁低速单关节运动。
+5. 通过独立服务只给右臂驱动上电，保持未使能并核对真实反馈；
+6. 回填真实限位、方向、比例和夹爪端点；
+7. 保持 `dry_run` 做目标预览；
+8. 最后才授权并显式解锁低速单关节运动。
 
 ## 目录
 

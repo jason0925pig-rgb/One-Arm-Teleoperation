@@ -27,6 +27,8 @@ public:
         robot_ip_ = declare_parameter<std::string>("robot_ip", "");
         robot_port_ = declare_parameter<int>("robot_port", 10020);
         dry_run_ = declare_parameter<bool>("dry_run", true);
+        hardware_power_authorized_ =
+            declare_parameter<bool>("hardware_power_authorized", false);
         hardware_motion_authorized_ =
             declare_parameter<bool>("hardware_motion_authorized", false);
         limits_configured_ = declare_parameter<bool>("limits_configured", false);
@@ -68,8 +70,17 @@ public:
             prefix + "/joint_states", 10);
         enabled_pub_ = create_publisher<std_msgs::msg::Bool>(
             prefix + "/motion_enabled", 10);
+        powered_pub_ = create_publisher<std_msgs::msg::Bool>(
+            prefix + "/powered_on", 10);
         status_pub_ = create_publisher<std_msgs::msg::String>(
             prefix + "/safety_status", 10);
+        power_service_ = create_service<std_srvs::srv::SetBool>(
+            prefix + "/set_powered_on",
+            std::bind(
+                &SafeOneArmServo::set_powered_on,
+                this,
+                std::placeholders::_1,
+                std::placeholders::_2));
         motion_service_ = create_service<std_srvs::srv::SetBool>(
             prefix + "/set_motion_enabled",
             std::bind(
@@ -105,6 +116,13 @@ public:
             dry_run_,
             connected_,
             static_cast<long long>(control_period.count()));
+        if (power_on_on_arm_) {
+            RCLCPP_ERROR(
+                get_logger(),
+                "power_on_on_arm is deprecated and ignored. Use the explicit "
+                "%s/set_powered_on service with hardware_power_authorized=true.",
+                prefix.c_str());
+        }
         if (!safety_configuration_valid_) {
             RCLCPP_ERROR(
                 get_logger(),
@@ -171,6 +189,114 @@ private:
         return true;
     }
 
+    void set_powered_on(
+        const std::shared_ptr<std_srvs::srv::SetBool::Request> request,
+        std::shared_ptr<std_srvs::srv::SetBool::Response> response) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!connected_) {
+            response->success = false;
+            response->message = "robot is not connected";
+            return;
+        }
+        if (dry_run_) {
+            response->success = true;
+            response->message = request->data
+                ? "dry-run power-on accepted; no hardware call was made"
+                : "dry-run power-off accepted; no hardware call was made";
+            return;
+        }
+
+        const auto feedback_age = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - last_feedback_received_).count();
+        if (!feedback_valid_ || feedback_age > feedback_timeout_seconds_) {
+            response->success = false;
+            response->message =
+                "no recent valid robot status; refusing to change power";
+            return;
+        }
+        if (!robot_socket_connected_) {
+            response->success = false;
+            response->message =
+                "robot status reports the controller socket is disconnected";
+            return;
+        }
+
+        if (!request->data) {
+            if (motion_enabled_ || robot_enabled_) {
+                response->success = false;
+                response->message =
+                    "refusing power_off while motion or robot enable is active";
+                return;
+            }
+            if (!robot_powered_on_) {
+                response->success = true;
+                response->message = "robot is already powered off";
+                return;
+            }
+            const errno_t result = robot_.power_off();
+            if (result != ERR_SUCC) {
+                response->success = false;
+                response->message =
+                    "robot power_off failed, error=" + std::to_string(result);
+                return;
+            }
+            response->success = true;
+            response->message =
+                "power_off accepted; verify /right_arm/safety_status";
+            RCLCPP_WARN(
+                get_logger(),
+                "Operator requested power_off. No enable or servo call was made.");
+            return;
+        }
+
+        if (!hardware_power_authorized_) {
+            response->success = false;
+            response->message =
+                "hardware_power_authorized is false; power-on is locked";
+            return;
+        }
+        if (motion_enabled_ || robot_enabled_) {
+            response->success = false;
+            response->message =
+                "robot is already enabled; power-only state cannot be guaranteed";
+            return;
+        }
+        if (robot_emergency_stop_ || robot_protective_stop_) {
+            response->success = false;
+            response->message =
+                "e-stop or protective stop is active; refusing power_on";
+            return;
+        }
+        if (robot_error_code_ != 0) {
+            response->success = false;
+            response->message =
+                "robot error is present; refusing power_on without clearing it";
+            return;
+        }
+        if (robot_powered_on_) {
+            response->success = true;
+            response->message =
+                "robot is already powered on and remains not enabled";
+            return;
+        }
+
+        const errno_t result = robot_.power_on();
+        if (result != ERR_SUCC) {
+            response->success = false;
+            response->message =
+                "robot power_on failed, error=" + std::to_string(result);
+            return;
+        }
+        response->success = true;
+        response->message =
+            "power_on accepted; no clear-error, enable, servo, or motion call "
+            "was made; verify /right_arm/safety_status";
+        RCLCPP_WARN(
+            get_logger(),
+            "Operator requested power_on only. No clear-error, enable, servo, "
+            "or motion call was made.");
+    }
+
     void set_motion_enabled(
         const std::shared_ptr<std_srvs::srv::SetBool::Request> request,
         std::shared_ptr<std_srvs::srv::SetBool::Response> response) {
@@ -200,11 +326,6 @@ private:
         }
 
         if (!dry_run_) {
-            if (power_on_on_arm_ && robot_.power_on() != ERR_SUCC) {
-                response->success = false;
-                response->message = "robot power_on failed";
-                return;
-            }
             if (enable_robot_on_arm_) {
                 robot_.clear_error();
                 if (robot_.enable_robot() != ERR_SUCC) {
@@ -521,11 +642,16 @@ private:
         enabled.data = motion_enabled_;
         enabled_pub_->publish(enabled);
 
+        std_msgs::msg::Bool powered;
+        powered.data = robot_powered_on_;
+        powered_pub_->publish(powered);
+
         std_msgs::msg::String status;
         std::ostringstream stream;
         stream
             << "arm=" << arm_name_
             << ";dry_run=" << dry_run_
+            << ";hardware_power_authorized=" << hardware_power_authorized_
             << ";hardware_motion_authorized=" << hardware_motion_authorized_
             << ";connected=" << connected_
             << ";feedback_valid=" << feedback_valid_
@@ -550,6 +676,7 @@ private:
     std::string robot_ip_;
     int robot_port_{};
     bool dry_run_{true};
+    bool hardware_power_authorized_{false};
     bool hardware_motion_authorized_{false};
     bool limits_configured_{false};
     bool safety_configuration_valid_{false};
@@ -587,7 +714,9 @@ private:
     rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr command_sub_;
     rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr state_pub_;
     rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr enabled_pub_;
+    rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr powered_pub_;
     rclcpp::Publisher<std_msgs::msg::String>::SharedPtr status_pub_;
+    rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr power_service_;
     rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr motion_service_;
     rclcpp::TimerBase::SharedPtr control_timer_;
     rclcpp::TimerBase::SharedPtr state_timer_;

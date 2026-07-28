@@ -7,11 +7,16 @@ safe_one_arm_servo:
 
     # Safe defaults: SDK calls are simulated and all real motion is locked.
     dry_run: true
+    # Independent permission for the explicit power-only service. This does not
+    # permit enable_robot, servo mode, or joint commands.
+    hardware_power_authorized: false
     # This independent gate must remain false during network and readback tests.
     # Set true only after limits/calibration are reviewed and the operator is
     # ready to call the two explicit enable services.
     hardware_motion_authorized: false
     limits_configured: false
+    # Deprecated compatibility setting. It is ignored; power changes must use
+    # /right_arm/set_powered_on explicitly.
     power_on_on_arm: false
     enable_robot_on_arm: false
     disable_robot_on_disarm: false
