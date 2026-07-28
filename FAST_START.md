@@ -5,7 +5,7 @@
 ```text
 Windows ZLink2 主臂
     → UDP
-Ubuntu 22.04 / ROS2
+Ubuntu 24.04 / ROS2 Jazzy
     → JAKA SDK
 Armstrong 右臂 + 知行 CTAG2F120
 ```
@@ -112,7 +112,7 @@ git pull --ff-only origin main
 先运行只读预检：
 
 ```bash
-cd ~/One-Arm-Teleoperation
+cd ~/onearm_teleop/One-Arm-Teleoperation
 bash tools/ubuntu_preflight.sh | tee ubuntu_preflight_report.txt
 ```
 
@@ -234,8 +234,99 @@ ros2 topic hz /teleop/leader_pulses
 
 ## 5. 阶段二：只读登录 Armstrong 右臂
 
-先停止阶段一的节点。确认机器人周围无人、急停可用。机器人控制器必须供电才能
-登录 SDK，但程序不会自动给电机上电或使能。
+先停止阶段一的节点。确认机器人周围无人、急停可用。
+
+### 5.1 建立独立的机器人有线网络
+
+Ubuntu 的两个网口用途不同：
+
+```text
+wlo1：Wi-Fi，连接 Windows、GitHub 和互联网
+enp86s0：有线网口，只连接 Armstrong 控制器
+```
+
+使用一根普通 Cat5e/Cat6、两端都是 RJ45 的以太网线。一端插 Ubuntu 电脑的
+有线网口，另一端插 Armstrong 控制柜标明的 LAN/调试网口，或者机器人随附交换机。
+不要插入舵机总线、48 V、PoE 或用途不明的接口；不确定控制柜端口时先让老师确认。
+
+机器人控制器必须供电，网口才会建立链路并允许 SDK 登录；此时不要求机器人电机
+上电或使能。插线后检查：
+
+```bash
+ip -br link show enp86s0
+nmcli device status
+```
+
+如果仍显示 `DOWN` 或 `disconnected`，先检查控制器供电、控制柜端口和网线，不启动
+机器人节点。
+
+控制器地址是 `192.168.2.226`，因此 Ubuntu 有线口必须使用同一 `/24` 网段内的
+另一个未占用地址。当前测试建议使用 `192.168.2.10/24`；绝不能把 Ubuntu 也设置成
+`192.168.2.226`。如果现场老师指定了其他上位机地址，以现场分配为准。
+
+先查看 NetworkManager 中是否已有绑定到 `enp86s0` 的连接：
+
+```bash
+nmcli -t -f NAME,DEVICE connection show
+```
+
+如果存在，例如 `Wired connection 1:enp86s0`，执行：
+
+```bash
+sudo nmcli connection modify "Wired connection 1" \
+  ipv4.method manual \
+  ipv4.addresses 192.168.2.10/24 \
+  ipv4.gateway "" \
+  ipv4.dns "" \
+  ipv4.never-default yes \
+  ipv6.method disabled
+sudo nmcli connection up "Wired connection 1"
+```
+
+把 `Wired connection 1` 换成上一步显示的实际名称。如果没有任何连接绑定
+`enp86s0`，执行：
+
+```bash
+sudo nmcli connection add \
+  type ethernet \
+  ifname enp86s0 \
+  con-name armstrong-wired \
+  ipv4.method manual \
+  ipv4.addresses 192.168.2.10/24 \
+  ipv4.never-default yes \
+  ipv6.method disabled
+sudo nmcli connection up armstrong-wired
+```
+
+不要给这条有线连接填写网关或 DNS，这样 Wi-Fi 仍负责 Windows/GitHub/互联网，
+有线口只负责 `192.168.2.0/24` 机器人网络。验证：
+
+```bash
+ip -br addr show enp86s0
+ip route get 192.168.2.226
+ping -c 4 192.168.2.226
+```
+
+期望看到：
+
+- `enp86s0` 为 `UP`，地址是 `192.168.2.10/24`；
+- 路由结果包含 `dev enp86s0 src 192.168.2.10`；
+- 四次 ping 能收到回复。
+
+### 暂停点 D1：有线网络
+
+发送：
+
+1. `nmcli device status`；
+2. `ip -br addr`；
+3. `ip route get 192.168.2.226`；
+4. `ping -c 4 192.168.2.226`。
+
+ping 不通就停在这里，不运行 SDK 节点。
+
+### 5.2 启动只读右臂节点
+
+机器人控制器必须供电才能登录 SDK，但下面的程序不会自动给电机上电或使能。
 
 Ubuntu 终端 U1：
 
@@ -280,7 +371,7 @@ ros2 topic echo --once /right_arm/safety_status
 ros2 topic echo --once /right_arm/motion_enabled
 ```
 
-### 暂停点 D
+### 暂停点 D2：只读 SDK 登录
 
 发送：
 
