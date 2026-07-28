@@ -36,6 +36,8 @@ public:
             declare_parameter<bool>("disable_robot_on_disarm", false);
         command_timeout_seconds_ =
             declare_parameter<double>("command_timeout_seconds", 0.30);
+        feedback_timeout_seconds_ =
+            declare_parameter<double>("feedback_timeout_seconds", 0.30);
         control_rate_hz_ = declare_parameter<double>("control_rate_hz", 125.0);
         state_rate_hz_ = declare_parameter<double>("state_rate_hz", 20.0);
         lower_limits_ =
@@ -213,15 +215,26 @@ private:
             }
         }
 
-        JointValue actual{};
-        if (robot_.get_joint_position(&actual) != ERR_SUCC) {
+        const auto feedback_age = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - last_feedback_received_).count();
+        if (!feedback_valid_ || feedback_age > feedback_timeout_seconds_) {
             response->success = false;
-            response->message = "cannot read current joint position";
+            response->message = "no recent valid robot-status joint feedback";
+            return;
+        }
+        if (
+            !dry_run_ &&
+            (!robot_powered_on_ || !robot_enabled_ ||
+             robot_emergency_stop_ || robot_protective_stop_)) {
+            response->success = false;
+            response->message =
+                "robot status is not safe for servo mode "
+                "(power/enable/e-stop/protective-stop)";
             return;
         }
         for (std::size_t index = 0; index < kJointCount; ++index) {
-            current_command_[index] = actual.jVal[index];
-            target_[index] = actual.jVal[index];
+            current_command_[index] = latest_actual_[index];
+            target_[index] = latest_actual_[index];
         }
         if (!positions_within_limits(current_command_)) {
             response->success = false;
@@ -367,17 +380,102 @@ private:
         if (!connected_) {
             return;
         }
-        JointValue actual{};
-        if (robot_.get_joint_position(&actual) != ERR_SUCC) {
-            RCLCPP_ERROR(get_logger(), "Actual joint-state read failed");
+
+        // RobotStatus carries the controller's monitored joint positions.
+        // On the supplied x86_64 EDG SDK, get_joint_position() can report a
+        // successful call while returning an all-zero legacy buffer.
+        RobotStatus robot_status{};
+        const errno_t status_result = robot_.get_robot_status(&robot_status);
+        if (status_result != ERR_SUCC) {
+            feedback_valid_ = false;
+            RCLCPP_ERROR_THROTTLE(
+                get_logger(),
+                *get_clock(),
+                1000,
+                "Robot-status read failed, error=%d",
+                status_result);
             disarm_locked("actual joint-state feedback was lost");
             return;
         }
+
+        std::array<double, kJointCount> actual{};
+        for (std::size_t index = 0; index < kJointCount; ++index) {
+            actual[index] = robot_status.joint_position[index];
+            if (!std::isfinite(actual[index])) {
+                feedback_valid_ = false;
+                RCLCPP_ERROR_THROTTLE(
+                    get_logger(),
+                    *get_clock(),
+                    1000,
+                    "Robot-status joint feedback contains NaN or infinity");
+                disarm_locked("actual joint-state feedback was invalid");
+                return;
+            }
+        }
+
+        latest_actual_ = actual;
+        last_feedback_received_ = std::chrono::steady_clock::now();
+        feedback_valid_ = true;
+        robot_powered_on_ = robot_status.powered_on != 0;
+        robot_enabled_ = robot_status.enabled != 0;
+        robot_emergency_stop_ = robot_status.emergency_stop != 0;
+        robot_protective_stop_ = robot_status.protective_stop != 0;
+        robot_on_soft_limit_ = robot_status.on_soft_limit != 0;
+        robot_socket_connected_ = robot_status.is_socket_connect != 0;
+        robot_error_code_ = robot_status.errcode;
+        robot_drag_status_ = robot_status.drag_status;
+
+        if (!feedback_source_logged_) {
+            JointValue legacy_feedback{};
+            const errno_t legacy_result =
+                robot_.get_joint_position(&legacy_feedback);
+            double maximum_difference = 0.0;
+            if (legacy_result == ERR_SUCC) {
+                for (std::size_t index = 0; index < kJointCount; ++index) {
+                    maximum_difference = std::max(
+                        maximum_difference,
+                        std::abs(legacy_feedback.jVal[index] - actual[index]));
+                }
+            }
+            RCLCPP_INFO(
+                get_logger(),
+                "Robot feedback source=get_robot_status; "
+                "powered_on=%d enabled=%d emergency_stop=%d "
+                "protective_stop=%d socket_connected=%d error_code=%d; "
+                "joint_position=[%.6f, %.6f, %.6f, %.6f, %.6f, %.6f, %.6f]; "
+                "legacy_get_joint_position_result=%d max_difference=%.6f",
+                robot_powered_on_,
+                robot_enabled_,
+                robot_emergency_stop_,
+                robot_protective_stop_,
+                robot_socket_connected_,
+                robot_error_code_,
+                actual[0],
+                actual[1],
+                actual[2],
+                actual[3],
+                actual[4],
+                actual[5],
+                actual[6],
+                legacy_result,
+                maximum_difference);
+            feedback_source_logged_ = true;
+        }
+
+        if (
+            motion_enabled_ &&
+            (!robot_powered_on_ || !robot_enabled_ ||
+             robot_emergency_stop_ || robot_protective_stop_ ||
+             robot_error_code_ != 0)) {
+            disarm_locked("robot status became unsafe");
+            return;
+        }
+
         sensor_msgs::msg::JointState message;
         message.header.stamp = now();
         message.name = joint_names_;
         for (std::size_t index = 0; index < kJointCount; ++index) {
-            message.position.push_back(actual.jVal[index]);
+            message.position.push_back(actual[index]);
         }
         state_pub_->publish(message);
     }
@@ -411,6 +509,16 @@ private:
             << ";dry_run=" << dry_run_
             << ";hardware_motion_authorized=" << hardware_motion_authorized_
             << ";connected=" << connected_
+            << ";feedback_valid=" << feedback_valid_
+            << ";feedback_source=get_robot_status"
+            << ";robot_powered_on=" << robot_powered_on_
+            << ";robot_enabled=" << robot_enabled_
+            << ";robot_emergency_stop=" << robot_emergency_stop_
+            << ";robot_protective_stop=" << robot_protective_stop_
+            << ";robot_on_soft_limit=" << robot_on_soft_limit_
+            << ";robot_socket_connected=" << robot_socket_connected_
+            << ";robot_error_code=" << robot_error_code_
+            << ";robot_drag_status=" << robot_drag_status_
             << ";limits_configured=" << safety_configuration_valid_
             << ";motion_enabled=" << motion_enabled_
             << ";has_target=" << has_target_;
@@ -430,9 +538,20 @@ private:
     bool enable_robot_on_arm_{false};
     bool disable_robot_on_disarm_{false};
     bool connected_{false};
+    bool feedback_valid_{false};
+    bool feedback_source_logged_{false};
+    bool robot_powered_on_{false};
+    bool robot_enabled_{false};
+    bool robot_emergency_stop_{false};
+    bool robot_protective_stop_{false};
+    bool robot_on_soft_limit_{false};
+    bool robot_socket_connected_{false};
     bool motion_enabled_{false};
     bool has_target_{false};
+    int robot_error_code_{0};
+    int robot_drag_status_{0};
     double command_timeout_seconds_{0.30};
+    double feedback_timeout_seconds_{0.30};
     double control_rate_hz_{125.0};
     double state_rate_hz_{20.0};
     std::vector<std::string> joint_names_;
@@ -441,8 +560,10 @@ private:
     std::vector<double> max_velocity_;
     std::array<double, kJointCount> target_{};
     std::array<double, kJointCount> current_command_{};
+    std::array<double, kJointCount> latest_actual_{};
     std::chrono::steady_clock::time_point last_command_received_{};
     std::chrono::steady_clock::time_point last_control_tick_{};
+    std::chrono::steady_clock::time_point last_feedback_received_{};
     std::mutex mutex_;
     rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr command_sub_;
     rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr state_pub_;

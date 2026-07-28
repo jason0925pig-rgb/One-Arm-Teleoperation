@@ -347,7 +347,8 @@ ros2 run servo_controller safe_one_arm_servo --ros-args \
 这个节点只会：
 
 - 登录配置中的右臂 `192.168.2.226:10020`；
-- 周期读取七个真实关节角；
+- 通过 JAKA `get_robot_status` 周期读取七个真实关节角，并同时读取控制器的
+  上电、使能、急停、碰撞保护、软限位和连接状态；
 - 发布 `/right_arm/joint_states` 和安全状态。
 
 它不会：
@@ -370,6 +371,11 @@ ros2 topic echo --once /right_arm/joint_states
 ros2 topic echo --once /right_arm/safety_status
 ros2 topic echo --once /right_arm/motion_enabled
 ```
+
+七个关节角不能在未核对机器人实际位姿时直接接受为全零。`safety_status` 必须包含
+`feedback_valid=1`，并核对 `feedback_source=get_robot_status`、控制器状态字段与
+现场界面一致。节点首次成功读取时，U1 还会打印 `joint_position=[...]` 以及旧
+`get_joint_position` 接口的对照结果。
 
 ### 暂停点 D2：只读 SDK 登录
 
