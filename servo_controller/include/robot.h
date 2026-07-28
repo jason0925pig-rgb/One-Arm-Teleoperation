@@ -82,6 +82,10 @@ class Robot {
             MoveMode move_mode,
             unsigned int step_num = 1);
 #if !defined(ARCH_ARM64)
+        errno_t edg_get_stat(
+            unsigned char robot_index,
+            JointValue *joint_pos,
+            CartesianPose *cartesian_pose);
         errno_t edg_servo_j(
             unsigned char robot_index,
             const JointValue *joint_pos,

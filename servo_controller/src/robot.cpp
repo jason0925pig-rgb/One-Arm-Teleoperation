@@ -230,6 +230,18 @@ errno_t Robot::servo_move_use_joint_LPF(double cutoffFreq){
 }
 
 #if !defined(ARCH_ARM64)
+errno_t Robot::edg_get_stat(
+    unsigned char robot_index,
+    JointValue *joint_pos,
+    CartesianPose *cartesian_pose) {
+    if (sim_mode_) {
+        *joint_pos = joint_pos_current_sim_;
+        *cartesian_pose = cart_pos_current_sim_;
+        return ERR_SUCC;
+    }
+    return jaka_robot_.edg_get_stat(robot_index, joint_pos, cartesian_pose);
+}
+
 errno_t Robot::edg_servo_j(
     unsigned char robot_index,
     const JointValue *joint_pos,
