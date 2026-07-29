@@ -38,7 +38,12 @@ safe_one_arm_servo:
     # Refuse servo mode if zero or multiple bridge publishers are present.
     require_single_command_publisher: true
 
-    # Replace with manufacturer/URDF limits before setting limits_configured.
+    # Replace with controller-confirmed task-safe limits before setting
+    # limits_configured. The legacy mocap URDF candidate was
+    # [-6.2832,-1.8325,-6.2832,-2.5307,-6.2832,-1.8325,-6.2832] to
+    # [ 6.2832, 1.8325, 6.2832, 0.5235, 6.2832, 1.8325, 6.2832], but it is
+    # deliberately NOT active because several axes are +/-360 degrees and the
+    # controller soft limits/task workspace have not been confirmed.
     joint_lower_limits: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     joint_upper_limits: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
@@ -59,11 +64,12 @@ safe_gripper_controller:
     slave_id: 1
     baudrate: 115200
     dry_run: true
-    # Still locked until the serial path, register map and safe endpoints are
-    # confirmed with the read-only feedback probe.
+    # Legacy mocap code and the previously running site node both identify
+    # open=0 and closed=12000. They remain untrusted candidates until the
+    # read-only probe confirms direction, safe endpoints and torque feedback.
     configuration_complete: false
     open_position: 0
-    closed_position: 0
+    closed_position: 12000
     speed: 20
     force: 20
     movement_timeout_seconds: 2.0

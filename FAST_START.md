@@ -514,6 +514,24 @@ python3 tools/extract_urdf_joint_limits.py /path/to/armstrong.urdf
 
 再按控制器 J1→J7 顺序使用七个 `--joint` 重新执行。不要用程序撞限位。
 
+旧 Axis Studio/Noitom 体感工程已经提供一组右臂候选范围：
+
+```text
+J1 [-6.2832,  6.2832]
+J2 [-1.8325,  1.8325]
+J3 [-6.2832,  6.2832]
+J4 [-2.5307,  0.5235]
+J5 [-6.2832,  6.2832]
+J6 [-1.8325,  1.8325]
+J7 [-6.2832,  6.2832]
+```
+
+它来自旧 `robot_7dofs.urdf`，而且 J1/J3/J5/J7 的 ±360° 很宽、七轴
+`velocity` 都是 0。它只能作为候选控制器范围，不能直接写进当前 YAML 后把
+`limits_configured` 改为 true。先从 Armstrong/JAKA 控制器或示教器核对真实软
+限位，再根据桌面和任务区域选择更窄的任务限位。完整证据与风险见
+[旧体感工程审计](docs/LEGACY_MOCAP_TELEOP_AUDIT.md)。
+
 ### 6.2 计算主从方向和比例
 
 Windows 每次只测一个主臂关节，记录起点、终点 pulse 和实际转角：
@@ -543,6 +561,10 @@ ros2 run servo_controller gripper_feedback_probe --ros-args \
 
 探针只有反馈，没有运动订阅器。使用厂家界面低速移动到任务安全的开/闭位置，
 分别记录反馈；不要自动搜索物理极限。
+
+旧体感工程和现场曾运行的夹爪节点都指向 `open=0`、`closed=12000`，并给出了
+位置反馈、位置到达、力矩到达和报警寄存器。这是强候选值，但在只读探针验证实物
+方向、端点和 `torque_reached` 之前，仍然保持 `configuration_complete: false`。
 
 ### 暂停点 E
 
@@ -717,6 +739,12 @@ python3 tools/ros2_episode_recorder.py \
 UTC、操作者、任务、成功/失败标签、停止原因、话题清单和 rosbag 返回码。默认记录
 主臂原始/滤波值、目标预览、实际命令、从臂状态、夹爪、安全状态、STOP 和各安全门。
 Windows `frames.csv` 仍单独保留，并通过已同步的系统时间戳与 ROS bag 对齐。
+
+旧体感系统曾在 `/workspace/` 保存 1280×720@30 Hz 的 Orbbec RGB/depth：
+head camera 序列号为 `CP8A9450002M`，right wrist camera 为
+`CP8A9450001Z`。可据此寻找设备和 ROS2 话题，但当前系统不硬编码旧目录或设备
+编号。外置硬盘备份不能只比较 `du -sh`；应使用 `rsync --archive --checksum`
+或哈希清单验证后，再由操作者决定是否删除源数据。
 
 ## 9. GitHub 日常同步
 

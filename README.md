@@ -77,6 +77,9 @@ Windows 不能每 8 ms 产生一套新的八电机数据：115200 波特率下�
 
 当前已完成与仍需真机测量的边界见
 [docs/OFFLINE_SAFETY_STATUS.md](docs/OFFLINE_SAFETY_STATUS.md)。
+旧 Axis Studio/Noitom 体感遥操作工程中可复用的限位、初始姿态、8 ms 时序、
+CTAG2F120 寄存器和数据记录证据见
+[docs/LEGACY_MOCAP_TELEOP_AUDIT.md](docs/LEGACY_MOCAP_TELEOP_AUDIT.md)。
 
 ## 目录
 

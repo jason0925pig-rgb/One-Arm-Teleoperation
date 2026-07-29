@@ -26,6 +26,13 @@ from facts that must be measured or approved on the real system.
 - Read-only Ubuntu process/ROS topic/serial conflict preflight.
 - Passive ROS2 episode recorder for leader, target, follower, gripper, safety,
   STOP, and optional RGB/depth topics.
+- Real right-arm readback verified on 2026-07-29 through
+  `get_robot_status`: non-zero seven-joint feedback remains available while
+  the robot is powered and explicitly disabled.
+- Independent robot-disable service verified: the final observed state was
+  `powered_on=true`, `robot_enabled=false`, `motion_enabled=false`.
+- Legacy Noitom/Axis Studio teleoperation evidence audited and sanitized in
+  `LEGACY_MOCAP_TELEOP_AUDIT.md`.
 
 ## Intentionally still locked
 
@@ -46,10 +53,10 @@ all hardware authorizations false, mapping scales zero, and gripper
 
 ## Requires the real robot or site geometry
 
-- Verify non-zero right-arm feedback after power-only testing.
 - Confirm controller soft limits and choose narrower task limits.
 - Calibrate each joint one at a time and validate direction/scale.
-- Measure CTAG2F120 feedback at operator-chosen safe open/closed poses.
+- Verify the legacy CTAG2F120 candidates (`open=0`, `closed=12000`) at
+  operator-chosen safe poses and confirm torque-reached behavior.
 - Validate STOP latency, watchdog behavior, and 125 Hz deadline statistics
   under the actual Ubuntu/Pi0/camera load.
 - Add self-collision, table, base, and workspace constraints only after the
