@@ -20,19 +20,23 @@ ZLink2 主臂
     ▼
 Windows 采集器
     ├─ 保存 frames.csv + metadata.json
-    └─ 每得到一套完整数据就发送一个 UDP 包
+    ├─ 每得到一套完整数据就发送一个 UDP 包
+    └─ Esc、Ctrl+C 或 deadman 松开时重复发送 STOP
                          │
                          ▼
 Ubuntu ROS2 UDP 桥接
-    ├─ 序号、会话、超时和跳变检查
+    ├─ 固定来源 IP、时间戳、序号、会话、超时和跳变检查
+    ├─ 可配置中值/低通/死区滤波
     ├─ 带起始偏移的绝对映射
     ├─ 目标预览
-    └─ 显式解锁后才发布控制目标
+    └─ deadman 按住且显式解锁后才发布控制目标
                          │
                          ▼
 Armstrong 安全执行节点
-    ├─ 二次限位、NaN、限速和看门狗检查
-    └─ 每 8 ms 调用一次 JAKA 伺服输出
+    ├─ 上电、机器人使能、伺服运动三个独立服务
+    ├─ 二次限位、NaN、限速、限加速度和双看门狗检查
+    ├─ 断线立即失败停止；仅全断电/未使能时允许人工重连
+    └─ 每 8 ms 调用一次 JAKA 伺服输出并统计周期抖动
 ```
 
 Windows 不能每 8 ms 产生一套新的八电机数据：115200 波特率下实测满速约
@@ -47,13 +51,16 @@ Windows 不能每 8 ms 产生一套新的八电机数据：115200 波特率下�
 - `calibration_complete: false`
 - `limits_configured: false`
 - `hardware_power_authorized: false`
+- `hardware_enable_authorized: false`
 - `hardware_motion_authorized: false`
+- Windows 来源 IP 尚未配置，真实映射会被拒绝
 - 主从比例为 0，真实七轴限位尚未填写
 - 夹爪 `configuration_complete: false`
 - 运动门初始关闭
 
 仅连接机器人、收到 UDP 或收到 ROS2 关节消息都不会运动。真机运动必须在参数
-复核后，再由操作者依次调用两个显式服务。
+复核后，再由操作者依次调用上电、机器人使能、伺服运动和映射四个显式服务。
+旧参数 `power_on_on_arm` 和 `enable_robot_on_arm` 均被忽略，不会自动操作硬件。
 
 ## 快速开始
 
@@ -67,6 +74,9 @@ Windows 不能每 8 ms 产生一套新的八电机数据：115200 波特率下�
 6. 回填真实限位、方向、比例和夹爪端点；
 7. 保持 `dry_run` 做目标预览；
 8. 最后才授权并显式解锁低速单关节运动。
+
+当前已完成与仍需真机测量的边界见
+[docs/OFFLINE_SAFETY_STATUS.md](docs/OFFLINE_SAFETY_STATUS.md)。
 
 ## 目录
 

@@ -3,13 +3,16 @@
 #include "std_msgs/msg/bool.hpp"
 #include "std_msgs/msg/string.hpp"
 #include "std_srvs/srv/set_bool.hpp"
+#include "std_srvs/srv/trigger.hpp"
 
 #include "robot.h"
+#include "safety_slew_limiter.hpp"
 
 #include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -29,6 +32,8 @@ public:
         dry_run_ = declare_parameter<bool>("dry_run", true);
         hardware_power_authorized_ =
             declare_parameter<bool>("hardware_power_authorized", false);
+        hardware_enable_authorized_ =
+            declare_parameter<bool>("hardware_enable_authorized", false);
         hardware_motion_authorized_ =
             declare_parameter<bool>("hardware_motion_authorized", false);
         limits_configured_ = declare_parameter<bool>("limits_configured", false);
@@ -42,6 +47,12 @@ public:
             declare_parameter<double>("feedback_timeout_seconds", 0.30);
         control_rate_hz_ = declare_parameter<double>("control_rate_hz", 125.0);
         state_rate_hz_ = declare_parameter<double>("state_rate_hz", 20.0);
+        control_deadline_warning_factor_ =
+            declare_parameter<double>("control_deadline_warning_factor", 1.5);
+        control_deadline_abort_seconds_ =
+            declare_parameter<double>("control_deadline_abort_seconds", 0.05);
+        require_single_command_publisher_ =
+            declare_parameter<bool>("require_single_command_publisher", true);
         lower_limits_ =
             declare_parameter<std::vector<double>>(
                 "joint_lower_limits", std::vector<double>{});
@@ -51,6 +62,9 @@ public:
         max_velocity_ =
             declare_parameter<std::vector<double>>(
                 "max_velocity_rad_s", std::vector<double>{});
+        max_acceleration_ =
+            declare_parameter<std::vector<double>>(
+                "max_acceleration_rad_s2", std::vector<double>{});
 
         for (int index = 1; index <= 7; ++index) {
             joint_names_.push_back(
@@ -59,11 +73,19 @@ public:
         safety_configuration_valid_ = validate_safety_configuration();
 
         const std::string prefix = "/" + arm_name_ + "_arm";
+        command_topic_ = prefix + "/teleop_joint_command";
         command_sub_ = create_subscription<sensor_msgs::msg::JointState>(
-            prefix + "/teleop_joint_command",
+            command_topic_,
             10,
             std::bind(
                 &SafeOneArmServo::command_callback,
+                this,
+                std::placeholders::_1));
+        stop_sub_ = create_subscription<std_msgs::msg::Bool>(
+            "/teleop/stop_request",
+            10,
+            std::bind(
+                &SafeOneArmServo::stop_callback,
                 this,
                 std::placeholders::_1));
         state_pub_ = create_publisher<sensor_msgs::msg::JointState>(
@@ -72,6 +94,8 @@ public:
             prefix + "/motion_enabled", 10);
         powered_pub_ = create_publisher<std_msgs::msg::Bool>(
             prefix + "/powered_on", 10);
+        robot_enabled_pub_ = create_publisher<std_msgs::msg::Bool>(
+            prefix + "/robot_enabled", 10);
         status_pub_ = create_publisher<std_msgs::msg::String>(
             prefix + "/safety_status", 10);
         power_service_ = create_service<std_srvs::srv::SetBool>(
@@ -81,10 +105,24 @@ public:
                 this,
                 std::placeholders::_1,
                 std::placeholders::_2));
+        enable_service_ = create_service<std_srvs::srv::SetBool>(
+            prefix + "/set_robot_enabled",
+            std::bind(
+                &SafeOneArmServo::set_robot_enabled,
+                this,
+                std::placeholders::_1,
+                std::placeholders::_2));
         motion_service_ = create_service<std_srvs::srv::SetBool>(
             prefix + "/set_motion_enabled",
             std::bind(
                 &SafeOneArmServo::set_motion_enabled,
+                this,
+                std::placeholders::_1,
+                std::placeholders::_2));
+        reconnect_service_ = create_service<std_srvs::srv::Trigger>(
+            prefix + "/reconnect",
+            std::bind(
+                &SafeOneArmServo::reconnect_robot,
                 this,
                 std::placeholders::_1,
                 std::placeholders::_2));
@@ -123,16 +161,26 @@ public:
                 "%s/set_powered_on service with hardware_power_authorized=true.",
                 prefix.c_str());
         }
+        if (enable_robot_on_arm_) {
+            RCLCPP_ERROR(
+                get_logger(),
+                "enable_robot_on_arm is deprecated and ignored. Use the explicit "
+                "%s/set_robot_enabled service with hardware_enable_authorized=true.",
+                prefix.c_str());
+        }
         if (!safety_configuration_valid_) {
             RCLCPP_ERROR(
                 get_logger(),
-                "Motion is locked: actual seven-joint limits and velocities "
-                "have not been configured.");
+                "Motion is locked: actual seven-joint limits, velocities, and "
+                "accelerations have not been configured.");
         }
     }
 
     ~SafeOneArmServo() override {
         disarm("node shutdown");
+        if (sdk_session_open_) {
+            robot_.login_out();
+        }
     }
 
 private:
@@ -143,9 +191,17 @@ private:
             return false;
         }
         if (
+            !std::isfinite(control_deadline_warning_factor_) ||
+            control_deadline_warning_factor_ <= 1.0 ||
+            !std::isfinite(control_deadline_abort_seconds_) ||
+            control_deadline_abort_seconds_ <= 0.0) {
+            return false;
+        }
+        if (
             lower_limits_.size() != kJointCount ||
             upper_limits_.size() != kJointCount ||
-            max_velocity_.size() != kJointCount) {
+            max_velocity_.size() != kJointCount ||
+            max_acceleration_.size() != kJointCount) {
             return false;
         }
         for (std::size_t index = 0; index < kJointCount; ++index) {
@@ -154,7 +210,9 @@ private:
                 !std::isfinite(upper_limits_[index]) ||
                 lower_limits_[index] >= upper_limits_[index] ||
                 !std::isfinite(max_velocity_[index]) ||
-                max_velocity_[index] <= 0.0) {
+                max_velocity_[index] <= 0.0 ||
+                !std::isfinite(max_acceleration_[index]) ||
+                max_acceleration_[index] <= 0.0) {
                 return false;
             }
         }
@@ -163,6 +221,7 @@ private:
 
     bool connect_robot() {
         if (dry_run_) {
+            sdk_session_open_ = true;
             return true;
         }
         if (robot_ip_.empty()) {
@@ -186,7 +245,45 @@ private:
         RCLCPP_INFO(
             get_logger(),
             "Robot login succeeded. No power/enable command has been sent.");
+        sdk_session_open_ = true;
         return true;
+    }
+
+    void reconnect_robot(
+        const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+        std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (
+            motion_enabled_ || servo_mode_entered_ ||
+            robot_enabled_ || robot_powered_on_) {
+            response->success = false;
+            response->message =
+                "reconnect is allowed only while servo mode, motion, robot "
+                "enable, and robot power are all off";
+            return;
+        }
+        disarm_locked("explicit reconnect requested");
+        feedback_valid_ = false;
+        feedback_source_logged_ = false;
+        if (sdk_session_open_) {
+            const errno_t logout_result = robot_.login_out();
+            if (logout_result != ERR_SUCC) {
+                connected_ = false;
+                response->success = false;
+                response->message =
+                    "SDK login_out failed, error=" +
+                    std::to_string(logout_result) +
+                    "; restart the node instead of retrying automatically";
+                return;
+            }
+            sdk_session_open_ = false;
+        }
+        connected_ = false;
+        connected_ = connect_robot();
+        response->success = connected_;
+        response->message = connected_
+            ? "SDK reconnected; no power, enable, servo, or motion call was made"
+            : "SDK reconnect failed; node remains fail-stopped";
     }
 
     void set_powered_on(
@@ -222,10 +319,10 @@ private:
         }
 
         if (!request->data) {
-            if (motion_enabled_ || robot_enabled_) {
+            if (motion_enabled_ || servo_mode_entered_ || robot_enabled_) {
                 response->success = false;
                 response->message =
-                    "refusing power_off while motion or robot enable is active";
+                    "refusing power_off while servo, motion, or robot enable is active";
                 return;
             }
             if (!robot_powered_on_) {
@@ -255,7 +352,7 @@ private:
                 "hardware_power_authorized is false; power-on is locked";
             return;
         }
-        if (motion_enabled_ || robot_enabled_) {
+        if (motion_enabled_ || servo_mode_entered_ || robot_enabled_) {
             response->success = false;
             response->message =
                 "robot is already enabled; power-only state cannot be guaranteed";
@@ -297,14 +394,131 @@ private:
             "or motion call was made.");
     }
 
+    void set_robot_enabled(
+        const std::shared_ptr<std_srvs::srv::SetBool::Request> request,
+        std::shared_ptr<std_srvs::srv::SetBool::Response> response) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!connected_) {
+            response->success = false;
+            response->message = "robot is not connected";
+            return;
+        }
+        if (dry_run_) {
+            response->success = true;
+            response->message = request->data
+                ? "dry-run robot-enable accepted; no hardware call was made"
+                : "dry-run robot-disable accepted; no hardware call was made";
+            return;
+        }
+
+        const auto feedback_age = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - last_feedback_received_).count();
+        if (!feedback_valid_ || feedback_age > feedback_timeout_seconds_) {
+            response->success = false;
+            response->message =
+                "no recent valid robot status; refusing to change robot enable";
+            return;
+        }
+        if (!robot_socket_connected_) {
+            response->success = false;
+            response->message =
+                "robot status reports the controller socket is disconnected";
+            return;
+        }
+
+        if (!request->data) {
+            disarm_locked("robot disable requested");
+            if (servo_mode_entered_) {
+                response->success = false;
+                response->message =
+                    "SDK did not confirm servo-mode exit; robot disable was not sent";
+                return;
+            }
+            if (!robot_enabled_) {
+                response->success = true;
+                response->message = "robot is already disabled";
+                return;
+            }
+            const errno_t result = robot_.disable_robot();
+            if (result != ERR_SUCC) {
+                response->success = false;
+                response->message =
+                    "robot disable failed, error=" + std::to_string(result);
+                return;
+            }
+            response->success = true;
+            response->message =
+                "robot disable accepted; verify /right_arm/robot_enabled";
+            RCLCPP_WARN(
+                get_logger(),
+                "Operator requested robot disable after leaving servo mode.");
+            return;
+        }
+
+        if (!hardware_enable_authorized_) {
+            response->success = false;
+            response->message =
+                "hardware_enable_authorized is false; robot enable is locked";
+            return;
+        }
+        if (!safety_configuration_valid_) {
+            response->success = false;
+            response->message =
+                "real limits, velocities, and accelerations are not configured";
+            return;
+        }
+        if (motion_enabled_ || servo_mode_entered_) {
+            response->success = false;
+            response->message =
+                "motion or servo mode is already active; enable state cannot be changed";
+            return;
+        }
+        if (!robot_powered_on_) {
+            response->success = false;
+            response->message = "robot is not powered on";
+            return;
+        }
+        if (
+            robot_emergency_stop_ || robot_protective_stop_ ||
+            robot_on_soft_limit_ || robot_error_code_ != 0) {
+            response->success = false;
+            response->message =
+                "robot status is unsafe; no clear-error command was sent";
+            return;
+        }
+        if (robot_enabled_) {
+            response->success = true;
+            response->message = "robot is already enabled";
+            return;
+        }
+
+        const errno_t result = robot_.enable_robot();
+        if (result != ERR_SUCC) {
+            response->success = false;
+            response->message =
+                "robot enable failed, error=" + std::to_string(result);
+            return;
+        }
+        response->success = true;
+        response->message =
+            "robot enable accepted; no clear-error, servo, or motion call was "
+            "made; verify /right_arm/robot_enabled";
+        RCLCPP_WARN(
+            get_logger(),
+            "Operator requested robot enable only. No clear-error, servo, or "
+            "motion call was made.");
+    }
+
     void set_motion_enabled(
         const std::shared_ptr<std_srvs::srv::SetBool::Request> request,
         std::shared_ptr<std_srvs::srv::SetBool::Response> response) {
         std::lock_guard<std::mutex> lock(mutex_);
         if (!request->data) {
             disarm_locked("operator request");
-            response->success = true;
-            response->message = "motion disabled and servo mode exited";
+            response->success = !servo_mode_entered_;
+            response->message = servo_mode_entered_
+                ? "motion gate closed but SDK failed to confirm servo-mode exit"
+                : "motion disabled and servo mode exited";
             return;
         }
         if (!connected_) {
@@ -324,15 +538,14 @@ private:
                 "hardware_motion_authorized is false; receive/readback testing only";
             return;
         }
-
-        if (!dry_run_) {
-            if (enable_robot_on_arm_) {
-                robot_.clear_error();
-                if (robot_.enable_robot() != ERR_SUCC) {
-                    response->success = false;
-                    response->message = "robot enable failed";
-                    return;
-                }
+        if (!dry_run_ && require_single_command_publisher_) {
+            const std::size_t publisher_count = count_publishers(command_topic_);
+            if (publisher_count != 1) {
+                response->success = false;
+                response->message =
+                    "expected exactly one teleop command publisher, found " +
+                    std::to_string(publisher_count);
+                return;
             }
         }
 
@@ -346,7 +559,8 @@ private:
         if (
             !dry_run_ &&
             (!robot_powered_on_ || !robot_enabled_ ||
-             robot_emergency_stop_ || robot_protective_stop_)) {
+             robot_emergency_stop_ || robot_protective_stop_ ||
+             robot_on_soft_limit_ || robot_error_code_ != 0)) {
             response->success = false;
             response->message =
                 "robot status is not safe for servo mode "
@@ -356,6 +570,7 @@ private:
         for (std::size_t index = 0; index < kJointCount; ++index) {
             current_command_[index] = latest_actual_[index];
             target_[index] = latest_actual_[index];
+            command_velocity_[index] = 0.0;
         }
         if (!positions_within_limits(current_command_)) {
             response->success = false;
@@ -363,11 +578,18 @@ private:
                 "current robot pose is outside configured safe limits";
             return;
         }
+        if (servo_mode_entered_) {
+            response->success = false;
+            response->message =
+                "servo mode is still marked active from an earlier session";
+            return;
+        }
         if (robot_.servo_move_enable(TRUE) != ERR_SUCC) {
             response->success = false;
             response->message = "failed to enter servo mode";
             return;
         }
+        servo_mode_entered_ = true;
         motion_enabled_ = true;
         has_target_ = false;
         last_control_tick_ = std::chrono::steady_clock::now();
@@ -398,6 +620,14 @@ private:
         target_ = ordered;
         has_target_ = true;
         last_command_received_ = std::chrono::steady_clock::now();
+    }
+
+    void stop_callback(const std_msgs::msg::Bool::SharedPtr message) {
+        if (!message->data) {
+            return;
+        }
+        std::lock_guard<std::mutex> lock(mutex_);
+        disarm_locked("teleop STOP request");
     }
 
     bool extract_ordered_positions(
@@ -454,10 +684,45 @@ private:
 
     void control_tick() {
         std::lock_guard<std::mutex> lock(mutex_);
+        const auto now = std::chrono::steady_clock::now();
+        const double expected_period = 1.0 / std::max(1.0, control_rate_hz_);
+        double callback_period = expected_period;
+        if (last_control_callback_.time_since_epoch().count() != 0) {
+            callback_period = std::chrono::duration<double>(
+                now - last_control_callback_).count();
+        }
+        last_control_callback_ = now;
+        ++control_tick_count_;
+        last_control_period_seconds_ = callback_period;
+        max_control_period_seconds_ =
+            std::max(max_control_period_seconds_, callback_period);
+        if (callback_period > expected_period * control_deadline_warning_factor_) {
+            ++control_deadline_misses_;
+            RCLCPP_WARN_THROTTLE(
+                get_logger(),
+                *get_clock(),
+                1000,
+                "Control timer deadline miss: actual=%.6fs expected=%.6fs "
+                "total_misses=%llu",
+                callback_period,
+                expected_period,
+                static_cast<unsigned long long>(control_deadline_misses_));
+            if (
+                motion_enabled_ &&
+                callback_period > control_deadline_abort_seconds_) {
+                disarm_locked("control-loop deadline abort threshold exceeded");
+                return;
+            }
+        }
         if (!motion_enabled_ || !has_target_) {
             return;
         }
-        const auto now = std::chrono::steady_clock::now();
+        const double feedback_age = std::chrono::duration<double>(
+            now - last_feedback_received_).count();
+        if (!feedback_valid_ || feedback_age > feedback_timeout_seconds_) {
+            disarm_locked("feedback watchdog timeout");
+            return;
+        }
         const double age = std::chrono::duration<double>(
             now - last_command_received_).count();
         if (age > command_timeout_seconds_) {
@@ -466,16 +731,19 @@ private:
         }
         double dt = std::chrono::duration<double>(now - last_control_tick_).count();
         last_control_tick_ = now;
-        dt = std::clamp(dt, 0.0, 0.1);
+        dt = std::clamp(dt, 0.000001, std::min(0.1, expected_period * 2.0));
 
         JointValue command{};
         for (std::size_t index = 0; index < kJointCount; ++index) {
-            const double maximum_step = max_velocity_[index] * dt;
-            const double delta = std::clamp(
-                target_[index] - current_command_[index],
-                -maximum_step,
-                maximum_step);
-            current_command_[index] += delta;
+            const auto step = one_arm_safety::acceleration_limited_step(
+                current_command_[index],
+                command_velocity_[index],
+                target_[index],
+                max_velocity_[index],
+                max_acceleration_[index],
+                dt);
+            current_command_[index] = step.position;
+            command_velocity_[index] = step.velocity;
             command.jVal[index] = current_command_[index];
         }
         if (!positions_within_limits(current_command_)) {
@@ -516,6 +784,7 @@ private:
                 "Robot-status read failed, error=%d",
                 status_result);
             disarm_locked("actual joint-state feedback was lost");
+            connected_ = false;
             return;
         }
 
@@ -545,6 +814,17 @@ private:
         robot_socket_connected_ = robot_status.is_socket_connect != 0;
         robot_error_code_ = robot_status.errcode;
         robot_drag_status_ = robot_status.drag_status;
+
+        if (!robot_socket_connected_) {
+            feedback_valid_ = false;
+            disarm_locked("controller socket disconnected");
+            connected_ = false;
+            RCLCPP_ERROR(
+                get_logger(),
+                "Controller socket disconnected. Node is fail-stopped; use the "
+                "guarded reconnect service only after power/enable are confirmed off.");
+            return;
+        }
 
         if (!feedback_source_logged_) {
             JointValue legacy_feedback{};
@@ -604,9 +884,9 @@ private:
 
         if (
             motion_enabled_ &&
-            (!robot_powered_on_ || !robot_enabled_ ||
-             robot_emergency_stop_ || robot_protective_stop_ ||
-             robot_error_code_ != 0)) {
+             (!robot_powered_on_ || !robot_enabled_ ||
+              robot_emergency_stop_ || robot_protective_stop_ ||
+              robot_on_soft_limit_ || robot_error_code_ != 0)) {
             disarm_locked("robot status became unsafe");
             return;
         }
@@ -626,15 +906,29 @@ private:
     }
 
     void disarm_locked(const std::string &reason) {
-        if (motion_enabled_ && connected_) {
-            robot_.servo_move_enable(FALSE);
+        if (servo_mode_entered_ && connected_) {
+            const errno_t servo_result = robot_.servo_move_enable(FALSE);
+            if (servo_result == ERR_SUCC) {
+                servo_mode_entered_ = false;
+                last_servo_disable_error_ = 0;
+            } else {
+                last_servo_disable_error_ = servo_result;
+                RCLCPP_ERROR(
+                    get_logger(),
+                    "Failed to exit servo mode, error=%d; physical e-stop may "
+                    "be required.",
+                    servo_result);
+            }
             if (!dry_run_ && disable_robot_on_disarm_) {
                 robot_.disable_robot();
             }
+        }
+        if (motion_enabled_) {
             RCLCPP_ERROR(get_logger(), "Motion disabled: %s", reason.c_str());
         }
         motion_enabled_ = false;
         has_target_ = false;
+        command_velocity_.fill(0.0);
     }
 
     void publish_status() {
@@ -646,14 +940,20 @@ private:
         powered.data = robot_powered_on_;
         powered_pub_->publish(powered);
 
+        std_msgs::msg::Bool robot_enabled;
+        robot_enabled.data = robot_enabled_;
+        robot_enabled_pub_->publish(robot_enabled);
+
         std_msgs::msg::String status;
         std::ostringstream stream;
         stream
             << "arm=" << arm_name_
-            << ";dry_run=" << dry_run_
-            << ";hardware_power_authorized=" << hardware_power_authorized_
-            << ";hardware_motion_authorized=" << hardware_motion_authorized_
+             << ";dry_run=" << dry_run_
+             << ";hardware_power_authorized=" << hardware_power_authorized_
+             << ";hardware_enable_authorized=" << hardware_enable_authorized_
+             << ";hardware_motion_authorized=" << hardware_motion_authorized_
             << ";connected=" << connected_
+            << ";sdk_session_open=" << sdk_session_open_
             << ";feedback_valid=" << feedback_valid_
             << ";feedback_source=get_robot_status"
             << ";robot_powered_on=" << robot_powered_on_
@@ -664,9 +964,15 @@ private:
             << ";robot_socket_connected=" << robot_socket_connected_
             << ";robot_error_code=" << robot_error_code_
             << ";robot_drag_status=" << robot_drag_status_
-            << ";limits_configured=" << safety_configuration_valid_
-            << ";motion_enabled=" << motion_enabled_
-            << ";has_target=" << has_target_;
+             << ";limits_configured=" << safety_configuration_valid_
+             << ";motion_enabled=" << motion_enabled_
+             << ";servo_mode_entered=" << servo_mode_entered_
+             << ";last_servo_disable_error=" << last_servo_disable_error_
+             << ";has_target=" << has_target_
+             << ";control_tick_count=" << control_tick_count_
+             << ";control_deadline_misses=" << control_deadline_misses_
+             << ";last_control_period_s=" << last_control_period_seconds_
+             << ";max_control_period_s=" << max_control_period_seconds_;
         status.data = stream.str();
         status_pub_->publish(status);
     }
@@ -674,16 +980,20 @@ private:
     Robot robot_;
     std::string arm_name_;
     std::string robot_ip_;
+    std::string command_topic_;
     int robot_port_{};
     bool dry_run_{true};
     bool hardware_power_authorized_{false};
+    bool hardware_enable_authorized_{false};
     bool hardware_motion_authorized_{false};
     bool limits_configured_{false};
     bool safety_configuration_valid_{false};
     bool power_on_on_arm_{false};
     bool enable_robot_on_arm_{false};
     bool disable_robot_on_disarm_{false};
+    bool require_single_command_publisher_{true};
     bool connected_{false};
+    bool sdk_session_open_{false};
     bool feedback_valid_{false};
     bool feedback_source_logged_{false};
     bool robot_powered_on_{false};
@@ -693,31 +1003,46 @@ private:
     bool robot_on_soft_limit_{false};
     bool robot_socket_connected_{false};
     bool motion_enabled_{false};
+    bool servo_mode_entered_{false};
     bool has_target_{false};
     int robot_error_code_{0};
     int robot_drag_status_{0};
+    int last_servo_disable_error_{0};
     double command_timeout_seconds_{0.30};
     double feedback_timeout_seconds_{0.30};
     double control_rate_hz_{125.0};
     double state_rate_hz_{20.0};
+    double control_deadline_warning_factor_{1.5};
+    double control_deadline_abort_seconds_{0.05};
     std::vector<std::string> joint_names_;
     std::vector<double> lower_limits_;
     std::vector<double> upper_limits_;
     std::vector<double> max_velocity_;
+    std::vector<double> max_acceleration_;
     std::array<double, kJointCount> target_{};
     std::array<double, kJointCount> current_command_{};
+    std::array<double, kJointCount> command_velocity_{};
     std::array<double, kJointCount> latest_actual_{};
     std::chrono::steady_clock::time_point last_command_received_{};
     std::chrono::steady_clock::time_point last_control_tick_{};
+    std::chrono::steady_clock::time_point last_control_callback_{};
     std::chrono::steady_clock::time_point last_feedback_received_{};
+    std::uint64_t control_tick_count_{0};
+    std::uint64_t control_deadline_misses_{0};
+    double last_control_period_seconds_{0.0};
+    double max_control_period_seconds_{0.0};
     std::mutex mutex_;
     rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr command_sub_;
+    rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr stop_sub_;
     rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr state_pub_;
     rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr enabled_pub_;
     rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr powered_pub_;
+    rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr robot_enabled_pub_;
     rclcpp::Publisher<std_msgs::msg::String>::SharedPtr status_pub_;
     rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr power_service_;
+    rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr enable_service_;
     rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr motion_service_;
+    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reconnect_service_;
     rclcpp::TimerBase::SharedPtr control_timer_;
     rclcpp::TimerBase::SharedPtr state_timer_;
     rclcpp::TimerBase::SharedPtr status_timer_;

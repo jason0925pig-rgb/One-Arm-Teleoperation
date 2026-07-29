@@ -59,6 +59,18 @@ ament_target_dependencies(safe_one_arm_servo
   std_srvs
 )
 
+if(BUILD_TESTING)
+  enable_testing()
+  add_executable(safety_slew_limiter_smoke
+    test/safety_slew_limiter_smoke.cpp
+  )
+  target_include_directories(safety_slew_limiter_smoke PRIVATE include)
+  add_test(
+    NAME safety_slew_limiter_smoke
+    COMMAND safety_slew_limiter_smoke
+  )
+endif()
+
 add_executable(safe_gripper_controller
   src/safe_gripper_controller.cpp
   src/DH_gripper.cpp

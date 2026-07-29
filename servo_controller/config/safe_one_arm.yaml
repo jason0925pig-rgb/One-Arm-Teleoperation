@@ -10,14 +10,18 @@ safe_one_arm_servo:
     # Independent permission for the explicit power-only service. This does not
     # permit enable_robot, servo mode, or joint commands.
     hardware_power_authorized: false
+    # Separate permission for enable_robot. It does not authorize servo mode.
+    hardware_enable_authorized: false
     # This independent gate must remain false during network and readback tests.
     # Set true only after limits/calibration are reviewed and the operator is
-    # ready to call the two explicit enable services.
+    # ready to call the explicit power, robot-enable, and servo services.
     hardware_motion_authorized: false
     limits_configured: false
     # Deprecated compatibility setting. It is ignored; power changes must use
     # /right_arm/set_powered_on explicitly.
     power_on_on_arm: false
+    # Deprecated compatibility setting. It is ignored; robot enable changes
+    # must use /right_arm/set_robot_enabled explicitly.
     enable_robot_on_arm: false
     disable_robot_on_disarm: false
 
@@ -27,6 +31,12 @@ safe_one_arm_servo:
     # JAKA servo_j/edg_servo_j step_num=1 uses the 8 ms base period.
     control_rate_hz: 125.0
     state_rate_hz: 20.0
+    # Record timer jitter continuously; exit servo mode if a live cycle is
+    # delayed by more than 50 ms.
+    control_deadline_warning_factor: 1.5
+    control_deadline_abort_seconds: 0.05
+    # Refuse servo mode if zero or multiple bridge publishers are present.
+    require_single_command_publisher: true
 
     # Replace with manufacturer/URDF limits before setting limits_configured.
     joint_lower_limits: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
@@ -34,6 +44,7 @@ safe_one_arm_servo:
 
     # Start conservatively, then validate on the real robot.
     max_velocity_rad_s: [0.10, 0.10, 0.10, 0.10, 0.10, 0.10, 0.10]
+    max_acceleration_rad_s2: [0.20, 0.20, 0.20, 0.20, 0.20, 0.20, 0.20]
 
 safe_gripper_controller:
   ros__parameters:
@@ -42,7 +53,9 @@ safe_gripper_controller:
     # "zx" is the historical internal driver name for the ZhiXing protocol.
     gripper_type: "zx"
     gripper_model: "CTAG2F120"
-    port: "/dev/ttyUSB0"
+    # Stable device identity discovered on the Armstrong Ubuntu host. This
+    # avoids ttyACM/ttyUSB enumeration changes but remains locked below.
+    port: "/dev/serial/by-id/usb-1a86_USB_Single_Serial_5ABB000800-if00"
     slave_id: 1
     baudrate: 115200
     dry_run: true

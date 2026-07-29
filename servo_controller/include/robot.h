@@ -51,6 +51,7 @@ class Robot {
 #else
         errno_t login_in(const char *ip, int port);
 #endif
+        errno_t login_out();
         errno_t power_on();
         errno_t power_off();
         errno_t enable_robot();

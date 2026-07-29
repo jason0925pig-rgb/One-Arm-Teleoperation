@@ -14,12 +14,15 @@ from std_srvs.srv import SetBool
 
 from .core import (
     JOINT_COUNT,
+    LeaderSignalFilter,
     MappingConfig,
     MultiJointUnwrapper,
     OffsetAbsoluteMapper,
     PacketError,
     SafetyError,
-    parse_leader_packet,
+    StopFrame,
+    parse_teleop_packet,
+    validate_packet_timestamp,
 )
 
 
@@ -29,11 +32,20 @@ class UdpLeaderBridge(Node):
         self.declare_parameter("bind_host", "0.0.0.0")
         self.declare_parameter("bind_port", 5005)
         self.declare_parameter("expected_source_ip", "")
+        self.declare_parameter("require_expected_source_ip_for_motion", True)
+        self.declare_parameter("require_single_command_subscriber_for_motion", True)
         self.declare_parameter("arm_name", "right")
         self.declare_parameter("dry_run", True)
         self.declare_parameter("calibration_complete", False)
         self.declare_parameter("leader_period_pulses", 2500)
         self.declare_parameter("max_leader_step_pulses", 800.0)
+        self.declare_parameter("median_filter_window", 1)
+        self.declare_parameter("low_pass_alpha", 1.0)
+        self.declare_parameter("leader_deadband_pulses", 0.0)
+        self.declare_parameter("require_deadman_for_motion", True)
+        self.declare_parameter("enforce_packet_timestamps_for_motion", True)
+        self.declare_parameter("max_packet_age_seconds", 0.50)
+        self.declare_parameter("max_future_skew_seconds", 0.25)
         self.declare_parameter("packet_timeout_seconds", 0.30)
         self.declare_parameter("follower_state_timeout_seconds", 0.30)
         self.declare_parameter("joint_signs", [1.0] * JOINT_COUNT)
@@ -54,6 +66,26 @@ class UdpLeaderBridge(Node):
         )
         self.expected_source_ip = str(
             self.get_parameter("expected_source_ip").value
+        )
+        self.require_expected_source_ip = bool(
+            self.get_parameter("require_expected_source_ip_for_motion").value
+        )
+        self.require_single_command_subscriber = bool(
+            self.get_parameter(
+                "require_single_command_subscriber_for_motion"
+            ).value
+        )
+        self.require_deadman = bool(
+            self.get_parameter("require_deadman_for_motion").value
+        )
+        self.enforce_packet_timestamps = bool(
+            self.get_parameter("enforce_packet_timestamps_for_motion").value
+        )
+        self.max_packet_age = float(
+            self.get_parameter("max_packet_age_seconds").value
+        )
+        self.max_future_skew = float(
+            self.get_parameter("max_future_skew_seconds").value
         )
         self.joint_names = [
             f"{self.arm_name}_joint{index}" for index in range(1, 8)
@@ -76,13 +108,25 @@ class UdpLeaderBridge(Node):
             int(self.get_parameter("leader_period_pulses").value),
             float(self.get_parameter("max_leader_step_pulses").value),
         )
+        self.signal_filter = LeaderSignalFilter(
+            median_window=int(self.get_parameter("median_filter_window").value),
+            low_pass_alpha=float(self.get_parameter("low_pass_alpha").value),
+            deadband_pulses=float(
+                self.get_parameter("leader_deadband_pulses").value
+            ),
+        )
         self.current_session: str | None = None
         self.last_sequence: int | None = None
         self.last_leader_position: tuple[float, ...] | None = None
+        self.last_filtered_position: tuple[float, ...] | None = None
+        self.last_deadman_held = False
+        self.last_packet_age_seconds: float | None = None
         self.last_leader_received = 0.0
         self.last_follower_position: tuple[float, ...] | None = None
         self.last_follower_received = 0.0
         self.mapping_enabled = False
+        self.rejected_packets = 0
+        self.stop_requests = 0
 
         bind_host = str(self.get_parameter("bind_host").value)
         bind_port = int(self.get_parameter("bind_port").value)
@@ -100,9 +144,13 @@ class UdpLeaderBridge(Node):
         self.raw_pub = self.create_publisher(
             Float64MultiArray, "/teleop/leader_pulses", 10
         )
+        self.filtered_pub = self.create_publisher(
+            Float64MultiArray, "/teleop/leader_filtered_pulses", 10
+        )
         self.gripper_pub = self.create_publisher(
             Bool, prefix + "/gripper_command", 10
         )
+        self.stop_pub = self.create_publisher(Bool, "/teleop/stop_request", 10)
         self.status_pub = self.create_publisher(String, "/teleop/bridge_status", 10)
         self.enabled_pub = self.create_publisher(Bool, "/teleop/enabled", 10)
         self.create_subscription(
@@ -122,6 +170,10 @@ class UdpLeaderBridge(Node):
         )
         if self.mapping_error:
             self.get_logger().warn(f"Mapping is not usable: {self.mapping_error}")
+        if not self.dry_run and self.require_expected_source_ip and not self.expected_source_ip:
+            self.get_logger().error(
+                "Real command publication is locked until expected_source_ip is configured."
+            )
 
     def _float_tuple(self, parameter_name: str) -> tuple[float, ...]:
         return tuple(float(value) for value in self.get_parameter(parameter_name).value)
@@ -136,9 +188,9 @@ class UdpLeaderBridge(Node):
         response: SetBool.Response,
     ) -> SetBool.Response:
         if not request.data:
-            self._disable("operator request")
+            self._request_stop("operator disabled teleoperation")
             response.success = True
-            response.message = "teleoperation mapping disabled"
+            response.message = "teleoperation mapping disabled and STOP published"
             return response
 
         now = time.monotonic()
@@ -147,23 +199,41 @@ class UdpLeaderBridge(Node):
             reasons.append("calibration_complete is false")
         if self.mapper is None:
             reasons.append(self.mapping_error or "mapping configuration is invalid")
-        if self.last_leader_position is None or now - self.last_leader_received > self.packet_timeout:
+        if (
+            self.last_filtered_position is None
+            or now - self.last_leader_received > self.packet_timeout
+        ):
             reasons.append("no recent leader packet")
         if (
             self.last_follower_position is None
             or now - self.last_follower_received > self.follower_timeout
         ):
             reasons.append("no recent follower state")
+        if not self.dry_run:
+            if self.require_expected_source_ip and not self.expected_source_ip:
+                reasons.append("expected_source_ip is empty")
+            if (
+                self.require_single_command_subscriber
+                and self.command_pub.get_subscription_count() != 1
+            ):
+                reasons.append(
+                    "expected exactly one teleop command subscriber, found "
+                    f"{self.command_pub.get_subscription_count()}"
+                )
+            if not self.enforce_packet_timestamps:
+                reasons.append("packet timestamp enforcement is disabled")
+            if self.require_deadman and not self.last_deadman_held:
+                reasons.append("Windows deadman is not held")
         if reasons:
             response.success = False
             response.message = "; ".join(reasons)
             return response
 
         assert self.mapper is not None
-        assert self.last_leader_position is not None
+        assert self.last_filtered_position is not None
         assert self.last_follower_position is not None
         self.mapper.set_reference(
-            self.last_leader_position,
+            self.last_filtered_position,
             self.last_follower_position,
         )
         self.mapping_enabled = True
@@ -181,12 +251,21 @@ class UdpLeaderBridge(Node):
             self.get_logger().error(f"Teleoperation disabled: {reason}")
         self.mapping_enabled = False
 
+    def _request_stop(self, reason: str) -> None:
+        self._disable(reason)
+        message = Bool()
+        message.data = True
+        self.stop_pub.publish(message)
+        self.stop_requests += 1
+        self.get_logger().error(f"STOP published: {reason}")
+
     def _follower_state_callback(self, msg: JointState) -> None:
         try:
             self.last_follower_position = self._ordered_positions(msg)
             self.last_follower_received = time.monotonic()
         except SafetyError as exc:
-            self._disable(f"invalid follower state: {exc}")
+            if self.mapping_enabled:
+                self._request_stop(f"invalid follower state: {exc}")
 
     def _ordered_positions(self, msg: JointState) -> tuple[float, ...]:
         if len(msg.position) != JOINT_COUNT:
@@ -207,37 +286,69 @@ class UdpLeaderBridge(Node):
             except BlockingIOError:
                 return
             except OSError as exc:
-                self._disable(f"UDP receive error: {exc}")
+                if self.mapping_enabled:
+                    self._request_stop(f"UDP receive error: {exc}")
                 return
             if self.expected_source_ip and source[0] != self.expected_source_ip:
+                self.rejected_packets += 1
                 continue
             try:
-                frame = parse_leader_packet(payload)
+                frame = parse_teleop_packet(payload)
+                if isinstance(frame, StopFrame):
+                    self._request_stop(
+                        f"Windows STOP ({frame.reason}, session={frame.session_id})"
+                    )
+                    continue
+                if self.enforce_packet_timestamps:
+                    packet_age = validate_packet_timestamp(
+                        frame.timestamp_unix_ns,
+                        time.time_ns(),
+                        self.max_packet_age,
+                        self.max_future_skew,
+                    )
+                else:
+                    packet_age = (
+                        time.time_ns() - frame.timestamp_unix_ns
+                    ) / 1_000_000_000.0
                 if frame.session_id != self.current_session:
                     self.current_session = frame.session_id
                     self.last_sequence = None
                     self.unwrapper.reset()
-                    self._disable("leader session changed")
+                    self.signal_filter.reset()
+                    if self.mapping_enabled:
+                        self._request_stop("leader session changed")
                 if self.last_sequence is not None and frame.sequence <= self.last_sequence:
                     raise PacketError("sequence is not newer than the previous packet")
                 leader_position = self.unwrapper.update(frame.joint_pulses)
+                filtered_position = self.signal_filter.update(leader_position)
             except (PacketError, SafetyError) as exc:
-                self._disable(str(exc))
+                self.rejected_packets += 1
+                if self.mapping_enabled:
+                    self._request_stop(str(exc))
                 continue
 
             self.last_sequence = frame.sequence
             self.last_leader_position = leader_position
+            self.last_filtered_position = filtered_position
+            self.last_deadman_held = frame.deadman_held
+            self.last_packet_age_seconds = packet_age
             self.last_leader_received = time.monotonic()
             raw_msg = Float64MultiArray()
             raw_msg.data = [float(value) for value in leader_position]
             self.raw_pub.publish(raw_msg)
+            filtered_msg = Float64MultiArray()
+            filtered_msg.data = [float(value) for value in filtered_position]
+            self.filtered_pub.publish(filtered_msg)
 
             if not self.mapping_enabled or self.mapper is None:
                 continue
+            if self.require_deadman and not frame.deadman_held:
+                self._request_stop("Windows deadman released")
+                continue
             try:
-                target = self.mapper.map(leader_position)
+                target = self.mapper.map(filtered_position)
             except SafetyError as exc:
-                self._disable(str(exc))
+                self._request_stop(str(exc))
                 continue
 
             target_msg = JointState()
@@ -257,9 +368,9 @@ class UdpLeaderBridge(Node):
             return
         now = time.monotonic()
         if now - self.last_leader_received > self.packet_timeout:
-            self._disable("leader packet timeout")
+            self._request_stop("leader packet timeout")
         elif now - self.last_follower_received > self.follower_timeout:
-            self._disable("follower state timeout")
+            self._request_stop("follower state timeout")
 
     def _publish_status(self) -> None:
         enabled = Bool()
@@ -269,8 +380,12 @@ class UdpLeaderBridge(Node):
         status.data = (
             f"enabled={self.mapping_enabled};dry_run={self.dry_run};"
             f"calibration_complete={self.calibration_complete};"
+            f"expected_source_ip={self.expected_source_ip or 'UNCONFIGURED'};"
+            f"deadman_held={self.last_deadman_held};"
             f"session={self.current_session or 'none'};"
-            f"sequence={self.last_sequence if self.last_sequence is not None else -1}"
+            f"sequence={self.last_sequence if self.last_sequence is not None else -1};"
+            f"packet_age_s={self.last_packet_age_seconds if self.last_packet_age_seconds is not None else -1:.3f};"
+            f"rejected_packets={self.rejected_packets};stop_requests={self.stop_requests}"
         )
         self.status_pub.publish(status)
 

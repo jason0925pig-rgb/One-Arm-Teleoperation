@@ -45,6 +45,13 @@ public:
                 &SafeGripperController::command_callback,
                 this,
                 std::placeholders::_1));
+        stop_sub_ = create_subscription<std_msgs::msg::Bool>(
+            "/teleop/stop_request",
+            10,
+            std::bind(
+                &SafeGripperController::stop_callback,
+                this,
+                std::placeholders::_1));
         state_pub_ = create_publisher<sensor_msgs::msg::JointState>(
             prefix + "/gripper_state", 10);
         status_pub_ = create_publisher<std_msgs::msg::String>(
@@ -200,6 +207,16 @@ private:
         }
     }
 
+    void stop_callback(const std_msgs::msg::Bool::SharedPtr message) {
+        if (!message->data) {
+            return;
+        }
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (enabled_ || moving_) {
+            stop_at_current_position("teleop STOP request");
+        }
+    }
+
     void stop_at_current_position(const std::string &reason) {
         try {
             if (!dry_run_) {
@@ -316,6 +333,7 @@ private:
     std::unique_ptr<ZX_gripper> zx_;
     std::mutex mutex_;
     rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr command_sub_;
+    rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr stop_sub_;
     rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr state_pub_;
     rclcpp::Publisher<std_msgs::msg::String>::SharedPtr status_pub_;
     rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr enable_service_;

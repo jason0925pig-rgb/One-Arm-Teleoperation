@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import math
+import statistics
+from collections import deque
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Union
 
 
 PROTOCOL = "one_arm_teleop"
@@ -32,9 +34,21 @@ class LeaderFrame:
     gripper_state: str
     gripper_raw_pulse: int
     gripper_unwrapped_pulse: int
+    deadman_held: bool
 
 
-def parse_leader_packet(payload: bytes) -> LeaderFrame:
+@dataclass(frozen=True)
+class StopFrame:
+    session_id: str
+    sequence: int
+    timestamp_unix_ns: int
+    reason: str
+
+
+TeleopPacket = Union[LeaderFrame, StopFrame]
+
+
+def _decode_packet(payload: bytes) -> dict[str, Any]:
     try:
         raw = json.loads(payload.decode("ascii"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -43,24 +57,52 @@ def parse_leader_packet(payload: bytes) -> LeaderFrame:
         raise PacketError("packet root must be an object")
     if raw.get("protocol") != PROTOCOL or raw.get("version") != PROTOCOL_VERSION:
         raise PacketError("protocol name or version does not match")
-    if raw.get("complete") is not True:
-        raise PacketError("incomplete leader frames are not accepted")
-
     try:
         session_id = str(raw["session_id"])
         sequence = int(raw["sequence"])
         timestamp_unix_ns = int(raw["timestamp_unix_ns"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise PacketError(f"packet field is missing or invalid: {exc}") from exc
+    if not session_id or sequence < 0 or timestamp_unix_ns <= 0:
+        raise PacketError("session, sequence or timestamp is invalid")
+    return raw
+
+
+def parse_teleop_packet(payload: bytes) -> TeleopPacket:
+    raw = _decode_packet(payload)
+    session_id = str(raw["session_id"])
+    sequence = int(raw["sequence"])
+    timestamp_unix_ns = int(raw["timestamp_unix_ns"])
+    message_type = raw.get("message_type", "leader_frame")
+
+    if message_type == "stop":
+        reason = str(raw.get("reason", "remote_stop")).strip()
+        if not reason or len(reason) > 160:
+            raise PacketError("STOP reason must contain 1 to 160 characters")
+        return StopFrame(
+            session_id=session_id,
+            sequence=sequence,
+            timestamp_unix_ns=timestamp_unix_ns,
+            reason=reason,
+        )
+    if message_type != "leader_frame":
+        raise PacketError(f"unsupported message_type: {message_type}")
+    if raw.get("complete") is not True:
+        raise PacketError("incomplete leader frames are not accepted")
+
+    try:
         joint_names = tuple(str(value) for value in raw["joint_names"])
         joint_pulses = tuple(int(value) for value in raw["joint_pulses"])
         gripper = raw["gripper"]
         gripper_state = str(gripper["state"])
         gripper_raw = int(gripper["raw_pulse"])
         gripper_unwrapped = int(gripper["unwrapped_pulse"])
+        deadman_raw = raw.get("deadman_held", False)
     except (KeyError, TypeError, ValueError) as exc:
         raise PacketError(f"packet field is missing or invalid: {exc}") from exc
 
-    if not session_id or sequence < 0 or timestamp_unix_ns <= 0:
-        raise PacketError("session, sequence or timestamp is invalid")
+    if not isinstance(deadman_raw, bool):
+        raise PacketError("deadman_held must be a JSON boolean")
     if joint_names != EXPECTED_JOINT_NAMES:
         raise PacketError(
             f"joint_names must be {EXPECTED_JOINT_NAMES}, got {joint_names}"
@@ -81,7 +123,40 @@ def parse_leader_packet(payload: bytes) -> LeaderFrame:
         gripper_state=gripper_state,
         gripper_raw_pulse=gripper_raw,
         gripper_unwrapped_pulse=gripper_unwrapped,
+        deadman_held=deadman_raw,
     )
+
+
+def parse_leader_packet(payload: bytes) -> LeaderFrame:
+    """Backward-compatible leader-only parser used by existing callers/tests."""
+    packet = parse_teleop_packet(payload)
+    if isinstance(packet, StopFrame):
+        raise PacketError("STOP packet is not a leader frame")
+    return packet
+
+
+def validate_packet_timestamp(
+    timestamp_unix_ns: int,
+    now_unix_ns: int,
+    max_age_seconds: float,
+    max_future_skew_seconds: float,
+) -> float:
+    """Return packet age in seconds, rejecting stale or future-dated packets."""
+    if timestamp_unix_ns <= 0 or now_unix_ns <= 0:
+        raise PacketError("packet and local timestamps must be positive")
+    if max_age_seconds <= 0.0 or max_future_skew_seconds < 0.0:
+        raise ValueError("timestamp limits are invalid")
+    age_seconds = (now_unix_ns - timestamp_unix_ns) / 1_000_000_000.0
+    if age_seconds > max_age_seconds:
+        raise PacketError(
+            f"packet is stale ({age_seconds:.3f}s > {max_age_seconds:.3f}s)"
+        )
+    if age_seconds < -max_future_skew_seconds:
+        raise PacketError(
+            "packet timestamp is too far in the future "
+            f"({-age_seconds:.3f}s > {max_future_skew_seconds:.3f}s)"
+        )
+    return age_seconds
 
 
 class MultiJointUnwrapper:
@@ -120,6 +195,67 @@ class MultiJointUnwrapper:
             result.append(candidate)
         self.previous = result
         return tuple(result)
+
+
+class LeaderSignalFilter:
+    """Median spike rejection, optional low-pass, then output deadband."""
+
+    def __init__(
+        self,
+        median_window: int = 1,
+        low_pass_alpha: float = 1.0,
+        deadband_pulses: float = 0.0,
+        joint_count: int = JOINT_COUNT,
+    ):
+        if median_window < 1 or median_window > 31 or median_window % 2 == 0:
+            raise ValueError("median_window must be an odd integer from 1 to 31")
+        if not 0.0 < low_pass_alpha <= 1.0:
+            raise ValueError("low_pass_alpha must be in (0, 1]")
+        if deadband_pulses < 0.0 or not math.isfinite(deadband_pulses):
+            raise ValueError("deadband_pulses must be finite and non-negative")
+        self.median_window = median_window
+        self.alpha = low_pass_alpha
+        self.deadband = deadband_pulses
+        self.joint_count = joint_count
+        self.history = [
+            deque(maxlen=median_window) for _ in range(self.joint_count)
+        ]
+        self.low_pass_state: list[float] | None = None
+        self.output: list[float] | None = None
+
+    def reset(self) -> None:
+        for values in self.history:
+            values.clear()
+        self.low_pass_state = None
+        self.output = None
+
+    def update(self, positions: tuple[float, ...]) -> tuple[float, ...]:
+        if len(positions) != self.joint_count:
+            raise SafetyError("unexpected joint count during filtering")
+        if any(not math.isfinite(value) for value in positions):
+            raise SafetyError("leader filter input contains a non-finite value")
+
+        medians: list[float] = []
+        for history, value in zip(self.history, positions):
+            history.append(float(value))
+            medians.append(float(statistics.median(history)))
+
+        if self.low_pass_state is None:
+            self.low_pass_state = medians
+        else:
+            self.low_pass_state = [
+                previous + self.alpha * (current - previous)
+                for previous, current in zip(self.low_pass_state, medians)
+            ]
+
+        if self.output is None:
+            self.output = list(self.low_pass_state)
+        else:
+            self.output = [
+                previous if abs(current - previous) <= self.deadband else current
+                for previous, current in zip(self.output, self.low_pass_state)
+            ]
+        return tuple(self.output)
 
 
 @dataclass(frozen=True)

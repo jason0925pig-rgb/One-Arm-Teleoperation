@@ -21,6 +21,7 @@ import math
 import re
 import socket
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -97,6 +98,9 @@ class UdpTeleopSender:
         self.target = target
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.packets_sent = 0
+        self.stop_packets_sent = 0
+        self.last_sequence = -1
+        self._lock = threading.Lock()
 
     def send(
         self,
@@ -104,15 +108,18 @@ class UdpTeleopSender:
         labels: tuple[str, ...],
         ids_by_label: dict[str, int],
         session_id: str,
+        deadman_held: bool,
     ) -> None:
         joint_labels = [label for label in labels if label != "gripper"]
         packet = {
             "protocol": TELEOP_PROTOCOL,
             "version": TELEOP_PROTOCOL_VERSION,
+            "message_type": "leader_frame",
             "session_id": session_id,
             "sequence": int(row["sequence"]),
             "timestamp_unix_ns": int(row["timestamp_unix_ns"]),
             "complete": True,
+            "deadman_held": bool(deadman_held),
             "joint_names": joint_labels,
             "servo_ids": [ids_by_label[label] for label in joint_labels],
             "joint_pulses": [int(row[f"{label}_pulse"]) for label in joint_labels],
@@ -129,11 +136,133 @@ class UdpTeleopSender:
             ensure_ascii=True,
             separators=(",", ":"),
         ).encode("ascii")
-        self.socket.sendto(payload, self.target)
-        self.packets_sent += 1
+        with self._lock:
+            self.socket.sendto(payload, self.target)
+            self.packets_sent += 1
+            self.last_sequence = max(self.last_sequence, int(row["sequence"]))
+
+    def send_stop(
+        self,
+        session_id: str,
+        reason: str,
+        repeat: int = 5,
+        interval_seconds: float = 0.02,
+    ) -> None:
+        """Send redundant fail-safe STOP datagrams; STOP is idempotent."""
+        safe_reason = reason.strip()[:160] or "remote_stop"
+        for index in range(max(1, repeat)):
+            with self._lock:
+                self.last_sequence += 1
+                packet = {
+                    "protocol": TELEOP_PROTOCOL,
+                    "version": TELEOP_PROTOCOL_VERSION,
+                    "message_type": "stop",
+                    "session_id": session_id,
+                    "sequence": self.last_sequence,
+                    "timestamp_unix_ns": time.time_ns(),
+                    "reason": safe_reason,
+                }
+                payload = json.dumps(
+                    packet,
+                    ensure_ascii=True,
+                    separators=(",", ":"),
+                ).encode("ascii")
+                self.socket.sendto(payload, self.target)
+                self.packets_sent += 1
+                self.stop_packets_sent += 1
+            if index + 1 < repeat:
+                time.sleep(interval_seconds)
 
     def close(self) -> None:
-        self.socket.close()
+        with self._lock:
+            self.socket.close()
+
+
+class WindowsSafetyKeyboard:
+    """Poll Esc/Space independently so a slow serial scan cannot delay STOP."""
+
+    VK_ESCAPE = 0x1B
+    VK_SPACE = 0x20
+
+    def __init__(
+        self,
+        sender: UdpTeleopSender | None,
+        session_id: str,
+        deadman_required: bool,
+        stop_repeat: int,
+        stop_interval: float,
+    ):
+        self.sender = sender
+        self.session_id = session_id
+        self.deadman_required = deadman_required
+        self.stop_repeat = stop_repeat
+        self.stop_interval = stop_interval
+        self.stop_requested = threading.Event()
+        self.stop_reason: str | None = None
+        self._shutdown = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._space_was_held = False
+        self._user32: Any | None = None
+        if sys.platform == "win32":
+            import ctypes
+
+            self._user32 = ctypes.windll.user32
+        elif deadman_required:
+            raise RuntimeError("--deadman is supported only on Windows")
+
+    def _key_down(self, virtual_key: int) -> bool:
+        return bool(
+            self._user32 is not None
+            and self._user32.GetAsyncKeyState(virtual_key) & 0x8000
+        )
+
+    def deadman_held(self) -> bool:
+        return self._key_down(self.VK_SPACE) if self.deadman_required else False
+
+    def start(self) -> None:
+        if self._user32 is None:
+            return
+        self._space_was_held = self.deadman_held()
+        self._thread = threading.Thread(
+            target=self._run,
+            name="teleop-safety-keyboard",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def close(self) -> None:
+        self._shutdown.set()
+        if self._thread is not None:
+            self._thread.join(timeout=0.5)
+
+    def request_stop(self, reason: str) -> None:
+        if self.stop_requested.is_set():
+            return
+        self.stop_reason = reason
+        self.stop_requested.set()
+        if self.sender is not None:
+            self.sender.send_stop(
+                self.session_id,
+                reason,
+                repeat=self.stop_repeat,
+                interval_seconds=self.stop_interval,
+            )
+
+    def _run(self) -> None:
+        escape_was_down = False
+        while not self._shutdown.wait(0.01):
+            escape_down = self._key_down(self.VK_ESCAPE)
+            if escape_down and not escape_was_down:
+                self.request_stop("escape_key")
+                return
+            escape_was_down = escape_down
+
+            if self.deadman_required:
+                space_held = self.deadman_held()
+                if self._space_was_held and not space_held:
+                    self.request_stop("deadman_released")
+                    return
+                self._space_was_held = space_held
 
 
 def unique_session_directory(root: Path, session_name: str) -> Path:
@@ -360,8 +489,11 @@ def initial_metadata(
                 else None
             ),
             "complete_frames_only": True,
+            "deadman_enabled": bool(args.deadman),
+            "stop_repeat_count": int(args.stop_repeat),
             "robot_motion_authorized_by_sender": False,
             "packets_sent": 0,
+            "stop_packets_sent": 0,
         },
         "mapping": {
             "source_path": str(mapping_path),
@@ -463,6 +595,13 @@ def record_session(
     write_json_atomic(metadata_path, metadata)
     gripper_machine = gripper_state.GripperStateMachine(gripper_calibration)
     udp_sender = UdpTeleopSender(args.udp_target) if args.udp_target else None
+    safety_keyboard = WindowsSafetyKeyboard(
+        udp_sender,
+        session_dir.name,
+        args.deadman,
+        args.stop_repeat,
+        args.stop_interval,
+    )
 
     requested_period = 1.0 / args.rate_hz
     sequence = 0
@@ -480,7 +619,10 @@ def record_session(
     print()
     print(f"Recording session: {session_dir}")
     print("Safety mode: PRAD query only; no position command is present.")
-    print("Press Ctrl+C to stop and finalize metadata.")
+    if args.deadman:
+        print("Deadman enabled: hold Space for live frames; releasing it sends STOP.")
+    print("Press Esc or Ctrl+C to send STOP and finalize metadata.")
+    safety_keyboard.start()
 
     try:
         with csv_path.open("w", newline="", encoding="utf-8") as csv_file:
@@ -488,6 +630,9 @@ def record_session(
             writer.writeheader()
 
             while True:
+                if safety_keyboard.stop_requested.is_set():
+                    stop_reason = safety_keyboard.stop_reason or "keyboard_stop"
+                    break
                 scan_started = time.monotonic()
                 sample = zlink.scan_positions(port, ids, args.timeout)
                 scan_duration_ms = (time.monotonic() - scan_started) * 1000.0
@@ -509,6 +654,7 @@ def record_session(
                         labels,
                         ids_by_label,
                         session_dir.name,
+                        safety_keyboard.deadman_held(),
                     )
 
                 reply_count = len(sample.pulses)
@@ -552,6 +698,9 @@ def record_session(
                     )
                 if args.duration is not None and elapsed >= args.duration:
                     break
+                if safety_keyboard.stop_requested.is_set():
+                    stop_reason = safety_keyboard.stop_reason or "keyboard_stop"
+                    break
 
                 next_deadline += requested_period
                 remaining = next_deadline - time.monotonic()
@@ -568,6 +717,19 @@ def record_session(
         error_text = f"{type(exc).__name__}: {exc}"
         raise
     finally:
+        safety_keyboard.close()
+        stop_send_error: str | None = None
+        if udp_sender is not None:
+            try:
+                udp_sender.send_stop(
+                    session_dir.name,
+                    stop_reason,
+                    repeat=args.stop_repeat,
+                    interval_seconds=args.stop_interval,
+                )
+            except OSError as exc:
+                stop_send_error = f"{type(exc).__name__}: {exc}"
+                print(f"WARNING: final UDP STOP send failed: {exc}", file=sys.stderr)
         ended = time.monotonic()
         duration_seconds = max(0.0, ended - session_started)
         actual_rate = sequence / duration_seconds if duration_seconds > 0 else 0.0
@@ -589,6 +751,11 @@ def record_session(
         metadata["network_stream"]["packets_sent"] = (
             udp_sender.packets_sent if udp_sender is not None else 0
         )
+        metadata["network_stream"]["stop_packets_sent"] = (
+            udp_sender.stop_packets_sent if udp_sender is not None else 0
+        )
+        if stop_send_error is not None:
+            metadata["network_stream"]["stop_send_error"] = stop_send_error
         if udp_sender is not None:
             udp_sender.close()
         if error_text is not None:
@@ -664,6 +831,26 @@ def build_parser() -> argparse.ArgumentParser:
             "leader frames and does not authorize robot motion"
         ),
     )
+    parser.add_argument(
+        "--deadman",
+        action="store_true",
+        help=(
+            "mark live frames active only while Space is held; releasing Space "
+            "sends repeated STOP packets and ends the session"
+        ),
+    )
+    parser.add_argument(
+        "--stop-repeat",
+        type=int,
+        default=5,
+        help="number of redundant UDP STOP datagrams (default: 5)",
+    )
+    parser.add_argument(
+        "--stop-interval",
+        type=float,
+        default=0.02,
+        help="seconds between redundant STOP datagrams (default: 0.02)",
+    )
     parser.add_argument("--session-name", default="leader_session")
     parser.add_argument("--task", default="")
     parser.add_argument("--operator", default="")
@@ -721,6 +908,12 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("--flush-every must be positive")
     if args.max_consecutive_incomplete < 0:
         raise SystemExit("--max-consecutive-incomplete cannot be negative")
+    if not 1 <= args.stop_repeat <= 20:
+        raise SystemExit("--stop-repeat must be between 1 and 20")
+    if not 0.0 <= args.stop_interval <= 0.20:
+        raise SystemExit("--stop-interval must be between 0 and 0.20 seconds")
+    if args.deadman and args.udp_target is None:
+        raise SystemExit("--deadman requires --udp-target")
 
 
 def main() -> int:

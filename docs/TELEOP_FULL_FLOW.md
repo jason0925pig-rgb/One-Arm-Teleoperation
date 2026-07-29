@@ -16,11 +16,14 @@ Windows/Ubuntu 分机命令、A–H 暂停点、URDF 限位提取和只读夹爪
 `one_arm_teleop_bridge/udp_leader_bridge` 接收 UDP，完成：
 
 - 协议、会话、序号、七轴顺序检查；
+- 固定 Windows 来源 IP、包时间戳和 deadman 检查；
 - 循环编码器连续展开与异常跳变检查；
+- 可配置中值、低通和小抖动死区滤波；
 - 同时采集主臂起点 `p0` 和从臂起点 `q0`；
 - `q_target = q0 + sign * scale * (p - p0)`；
 - 逐关节软限位和主从状态超时检查；
 - 发布目标预览，以及解锁后发布真实 ROS2 目标。
+- 接收 Windows STOP 或看门狗超时后立即关闭映射并通知执行端。
 
 Windows 每得到一套完整八通道数据才发送一次 UDP。ZLink2 实测完整轮询约
 58 ms，因此新数据约为 15–17 Hz；桥接不会把重复旧帧伪装成 8 ms 新数据。
@@ -31,13 +34,13 @@ Windows 每得到一套完整八通道数据才发送一次 UDP。ZLink2 实测�
 
 - 按关节名称重新排序；
 - 七轴数量、NaN/Inf、软限位的第二次检查；
-- 每关节最大速度限制；
-- 每 8 ms（125 Hz）限速推进并调用 JAKA `servo_j/edg_servo_j`，
+- 每关节最大速度和最大加速度限制；
+- 每 8 ms（125 Hz）平滑推进并调用 JAKA `servo_j/edg_servo_j`，
   `step_num=1`；
-- 300 ms 命令看门狗；
+- 300 ms 命令/反馈看门狗和 8 ms 周期抖动统计；
 - 每次通过 SDK 重新读取真实关节状态；
-- 独立、显式且默认锁定的驱动上电服务；
-- 显式服务解锁和退出伺服模式。
+- 独立、显式且默认锁定的驱动上电、机器人使能、伺服运动服务；
+- SDK 断线失败停止，以及仅在全断电/未使能时允许的人工重连。
 
 它不会在启动时自动上电、使能或进入伺服模式。
 
@@ -53,7 +56,9 @@ ChangingTek）CTAG2F120，内部沿用历史驱动名 `ZX`，支持
 - `calibration_complete: false`
 - `limits_configured: false`
 - `hardware_power_authorized: false`
+- `hardware_enable_authorized: false`
 - `hardware_motion_authorized: false`
+- `expected_source_ip` 未配置
 - 关节比例为 0
 - 关节上下限尚未填写
 - `gripper_type: zx`，`gripper_model: CTAG2F120` 已确认；
@@ -61,7 +66,7 @@ ChangingTek）CTAG2F120，内部沿用历史驱动名 `ZX`，支持
 
 即使误调用解锁服务，程序也会返回失败。
 
-## 3. Ubuntu 22 / ROS2 构建
+## 3. Ubuntu 24.04 / ROS2 Jazzy 构建
 
 将仓库放入 Ubuntu 后，在仓库根目录运行：
 
@@ -153,31 +158,32 @@ limits_configured: true
 第一轮仍保持桥接 `dry_run: true`、执行端
 `hardware_motion_authorized: false`，只检查 `/teleop/target_preview`。
 
-## 6. 双重解锁
+## 6. 四重解锁
 
 真机配置完成且现场急停可用后，明确设置：
 
 ```yaml
 # bridge
 dry_run: false
+expected_source_ip: "<WINDOWS_IP>"
 
 # executor
 dry_run: false
-hardware_power_authorized: false
+hardware_power_authorized: true
+hardware_enable_authorized: true
 hardware_motion_authorized: true
 control_rate_hz: 125.0
 ```
 
-然后先启动执行端运动门：
+Windows 发送器必须加 `--deadman` 并按住 Space。现场确认后依次打开四个门：
 
 ```bash
+ros2 service call /right_arm/set_powered_on \
+  std_srvs/srv/SetBool "{data: true}"
+ros2 service call /right_arm/set_robot_enabled \
+  std_srvs/srv/SetBool "{data: true}"
 ros2 service call /right_arm/set_motion_enabled \
   std_srvs/srv/SetBool "{data: true}"
-```
-
-再启动主从映射门：
-
-```bash
 ros2 service call /teleop/set_enabled \
   std_srvs/srv/SetBool "{data: true}"
 ```
@@ -185,16 +191,21 @@ ros2 service call /teleop/set_enabled \
 第二个服务成功时，桥接节点同时记录当前主臂 `p0` 和当前从臂 `q0`，
 这就是带起始偏移的绝对控制零点。
 
-停止顺序相反：
+松开 Space 会先发送 STOP。随后显式关门并取消使能：
 
 ```bash
 ros2 service call /teleop/set_enabled \
   std_srvs/srv/SetBool "{data: false}"
 ros2 service call /right_arm/set_motion_enabled \
   std_srvs/srv/SetBool "{data: false}"
+ros2 service call /right_arm/set_robot_enabled \
+  std_srvs/srv/SetBool "{data: false}"
+ros2 service call /right_arm/set_powered_on \
+  std_srvs/srv/SetBool "{data: false}"
 ```
 
-任何数据超时、越界、非有限数或 SDK 失败都会关闭运动门。
+任何数据超时、来源/时间戳/deadman 异常、越界、非有限数、周期严重超期或 SDK
+失败都会关闭运动门。
 
 ## 7. 夹爪
 
@@ -217,19 +228,17 @@ ros2 service call /right_arm/set_gripper_enabled \
 
 ## 8. 数据记录和视频
 
-遥操作不要求必须录制。为训练采集时，Ubuntu 用 rosbag2 统一记录：
+遥操作不要求必须录制。为训练采集时，先查出真实 RGB/深度话题，然后使用被动
+episode 记录器：
 
 ```bash
-ros2 bag record \
-  /teleop/leader_pulses \
-  /teleop/target_preview \
-  /right_arm/teleop_joint_command \
-  /right_arm/joint_states \
-  /right_arm/gripper_command \
-  /right_arm/gripper_state \
-  /camera/color/image_raw \
-  /camera/depth/image_raw
+python3 tools/ros2_episode_recorder.py \
+  --name pick_cup_001 \
+  --require-topic /right_arm/joint_states \
+  --extra-topic /ACTUAL_RGB_TOPIC \
+  --extra-topic /ACTUAL_DEPTH_TOPIC
 ```
 
 相机数据建议直接保存在 Ubuntu，不实时传回 Windows。Windows CSV 是主臂
-原始数据备份；Ubuntu rosbag 保存动作、从臂反馈和视频的统一时间线。
+原始数据备份；Ubuntu rosbag 保存动作、从臂反馈、安全状态、STOP 和视频的统一
+时间线，`episode_metadata.json` 保存任务、操作者、结果和停止原因。

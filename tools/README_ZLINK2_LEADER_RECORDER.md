@@ -26,7 +26,8 @@
 .\tools\run_zlink2_recorder.cmd --port COM10 --session-name test
 ```
 
-将主臂放到希望作为本次起始偏移的姿态，按 Enter 开始。按 `Ctrl+C` 正常结束。
+将主臂放到希望作为本次起始偏移的姿态，按 Enter 开始。按 `Esc` 或 `Ctrl+C`
+正常结束；若配置了 UDP，程序结束前会重复发送 STOP。
 
 如果关节有阻力，不要强拧。只有托住机械臂并理解重力下落风险后，才使用：
 
@@ -66,6 +67,22 @@
 不提供 `--udp-target` 时网络功能完全关闭。UDP 包只包含只读主臂位置和
 夹爪状态，发送端没有机器人上电、使能或运动能力。Ubuntu ROS2 桥接还需要
 通过标定、安全检查和显式服务解锁后，才可能发布机器人目标。
+
+真实遥操作必须加 `--deadman`：
+
+```powershell
+.\tools\run_zlink2_recorder.cmd `
+  --port COM10 `
+  --rate-hz 15 `
+  --udp-target 192.168.0.36:5005 `
+  --deadman `
+  --session-name live_with_deadman
+```
+
+按住 Space 时帧内才有 `deadman_held=true`。一旦曾经按住后松开，独立键盘线程会
+立即重复发送 5 个 STOP 包并结束采集；它不需要等待一次约 60～70 ms 的串口扫描
+完成。可用 `--stop-repeat` 和 `--stop-interval` 调整冗余发送，但不能用它们代替
+Ubuntu 看门狗或实体急停。
 
 ## 4. 输出文件
 
@@ -133,13 +150,14 @@ recordings/
 - 夹爪标定快照、SHA-256 和当次实际使用的阈值。
 - 本次启动基准 pulse。
 - 请求/实际采样率。
+- UDP deadman 是否开启、普通包/STOP 包数量和 STOP 发送错误。
 - 完整帧、缺失帧和串口丢回复统计。
 - 正常结束、人工停止或错误停止原因。
 
 ## 5. 与真机数据集的关系
 
 当前文件是主臂动作源数据，还不是完整的 LeRobot/Armstrong 数据集。接入真机后，
-Linux ROS2 适配器会使用同一时间戳追加：
+Linux ROS2 适配器会按照两台电脑同步后的系统时钟对齐：
 
 - Armstrong 实际关节状态。
 - 实际执行目标。

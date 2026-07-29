@@ -28,6 +28,14 @@ errno_t Robot::login_in(const char *ip, int port) {
 }
 #endif
 
+errno_t Robot::login_out() {
+    if (sim_mode_) {
+        std::cout << "[sim mode]::login out" << std::endl;
+        return 0;
+    }
+    return jaka_robot_.login_out();
+}
+
 errno_t Robot::power_on() {
     if (sim_mode_){
         std::cout << "[sim mode]::power on" << std::endl;
