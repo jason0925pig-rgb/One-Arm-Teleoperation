@@ -3,7 +3,7 @@ udp_leader_bridge:
     bind_host: "0.0.0.0"
     bind_port: 5005
     # Set this to the Windows Ethernet/Wi-Fi IPv4 address before real motion.
-    expected_source_ip: ""
+    expected_source_ip: "192.168.0.105"
     require_expected_source_ip_for_motion: true
     require_single_command_subscriber_for_motion: true
     # Project decision confirmed on 2026-07-27: use the Armstrong right arm.
@@ -27,10 +27,13 @@ udp_leader_bridge:
     packet_timeout_seconds: 0.30
     follower_state_timeout_seconds: 0.30
 
-    # Replace only after one-joint-at-a-time calibration.
+    # Trial values for one-joint-at-a-time calibration. The sign remains
+    # unverified; keep calibration_complete=false outside an attended trial.
     joint_signs: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
-    scale_rad_per_pulse: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    # Existing ZServo convention: pulse 500..2500 spans 270 degrees.
+    scale_rad_per_pulse: [0.00235619449, 0.00235619449, 0.00235619449, 0.00235619449, 0.00235619449, 0.00235619449, 0.00235619449]
 
-    # Must be replaced with the actual Armstrong/JAKA safe limits.
-    joint_lower_limits: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-    joint_upper_limits: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    # Provisional outer envelope copied from the legacy Noitom/Axis Studio
+    # URDF. These broad ranges are not collision-aware task limits.
+    joint_lower_limits: [-6.2832, -1.8325, -6.2832, -2.5307, -6.2832, -1.8325, -6.2832]
+    joint_upper_limits: [ 6.2832,  1.8325,  6.2832,  0.5235,  6.2832,  1.8325,  6.2832]

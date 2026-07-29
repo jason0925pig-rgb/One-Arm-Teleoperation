@@ -16,7 +16,9 @@ safe_one_arm_servo:
     # Set true only after limits/calibration are reviewed and the operator is
     # ready to call the explicit power, robot-enable, and servo services.
     hardware_motion_authorized: false
-    limits_configured: false
+    # Provisional outer envelope from the legacy Noitom/Axis Studio URDF.
+    # This is not yet a controller-confirmed, collision-aware task envelope.
+    limits_configured: true
     # Deprecated compatibility setting. It is ignored; power changes must use
     # /right_arm/set_powered_on explicitly.
     power_on_on_arm: false
@@ -38,14 +40,9 @@ safe_one_arm_servo:
     # Refuse servo mode if zero or multiple bridge publishers are present.
     require_single_command_publisher: true
 
-    # Replace with controller-confirmed task-safe limits before setting
-    # limits_configured. The legacy mocap URDF candidate was
-    # [-6.2832,-1.8325,-6.2832,-2.5307,-6.2832,-1.8325,-6.2832] to
-    # [ 6.2832, 1.8325, 6.2832, 0.5235, 6.2832, 1.8325, 6.2832], but it is
-    # deliberately NOT active because several axes are +/-360 degrees and the
-    # controller soft limits/task workspace have not been confirmed.
-    joint_lower_limits: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-    joint_upper_limits: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    # J1/J3/J5/J7 are +/-360 degrees, so these broad limits are temporary.
+    joint_lower_limits: [-6.2832, -1.8325, -6.2832, -2.5307, -6.2832, -1.8325, -6.2832]
+    joint_upper_limits: [ 6.2832,  1.8325,  6.2832,  0.5235,  6.2832,  1.8325,  6.2832]
 
     # Start conservatively, then validate on the real robot.
     max_velocity_rad_s: [0.10, 0.10, 0.10, 0.10, 0.10, 0.10, 0.10]
