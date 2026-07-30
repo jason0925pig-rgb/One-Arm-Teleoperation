@@ -34,6 +34,8 @@ public:
         closed_position_ = declare_parameter<int>("closed_position", 0);
         speed_ = declare_parameter<int>("speed", 20);
         force_ = declare_parameter<int>("force", 20);
+        allowed_alarm_mask_ =
+            declare_parameter<int>("allowed_alarm_mask", 0);
         movement_timeout_seconds_ =
             declare_parameter<double>("movement_timeout_seconds", 2.0);
 
@@ -98,7 +100,24 @@ private:
             reason = "speed and force must be within 0..100";
             return false;
         }
+        if (allowed_alarm_mask_ < 0 || allowed_alarm_mask_ > 0xFFFF) {
+            reason = "allowed_alarm_mask must be within 0..65535";
+            return false;
+        }
         return true;
+    }
+
+    bool zx_alarm_allowed(uint16_t alarm, std::string &reason) const {
+        const auto disallowed =
+            static_cast<uint16_t>(alarm & ~static_cast<uint16_t>(allowed_alarm_mask_));
+        if (disallowed == 0) {
+            return true;
+        }
+        reason =
+            "ZX gripper has disallowed alarm bits: alarm=" +
+            std::to_string(alarm) +
+            " allowed_mask=" + std::to_string(allowed_alarm_mask_);
+        return false;
     }
 
     void set_enabled(
@@ -124,6 +143,7 @@ private:
             response->message = reason;
             return;
         }
+        has_requested_state_ = false;
         enabled_ = true;
         response->success = true;
         response->message =
@@ -153,6 +173,11 @@ private:
             } else {
                 zx_ = std::make_unique<ZX_gripper>(
                     port_.c_str(), slave_id_, baudrate_);
+                last_alarm_ = zx_->read_alarm();
+                if (!zx_alarm_allowed(last_alarm_, reason)) {
+                    zx_.reset();
+                    return false;
+                }
                 zx_->enable(true);
             }
         } catch (const std::exception &error) {
@@ -183,7 +208,11 @@ private:
         if (!enabled_) {
             return;
         }
+        if (has_requested_state_ && message->data == requested_open_) {
+            return;
+        }
         requested_open_ = message->data;
+        has_requested_state_ = true;
         target_position_ = requested_open_ ? open_position_ : closed_position_;
         try {
             if (!dry_run_) {
@@ -192,6 +221,11 @@ private:
                         throw std::runtime_error("DH target position write failed");
                     }
                 } else if (zx_) {
+                    std::string reason;
+                    last_alarm_ = zx_->read_alarm();
+                    if (!zx_alarm_allowed(last_alarm_, reason)) {
+                        throw std::runtime_error(reason);
+                    }
                     zx_->temp_move(target_position_, speed_, force_);
                 } else {
                     throw std::runtime_error("gripper hardware is not initialized");
@@ -203,6 +237,7 @@ private:
         } catch (const std::exception &error) {
             enabled_ = false;
             moving_ = false;
+            disable_hardware();
             RCLCPP_ERROR(get_logger(), "Gripper command failed: %s", error.what());
         }
     }
@@ -267,7 +302,15 @@ private:
                 } else if (zx_) {
                     current_position_ =
                         static_cast<int>(zx_->feedback_position());
-                    if (zx_->torque_reached()) {
+                    last_alarm_ = zx_->read_alarm();
+                    std::string reason;
+                    if (!zx_alarm_allowed(last_alarm_, reason)) {
+                        moving_ = false;
+                        enabled_ = false;
+                        disable_hardware();
+                        RCLCPP_ERROR(get_logger(), "%s", reason.c_str());
+                        state = "ALARM_STOP";
+                    } else if (zx_->torque_reached()) {
                         moving_ = false;
                         state = "TORQUE_REACHED";
                     } else if (zx_->position_reached()) {
@@ -287,6 +330,7 @@ private:
         } catch (const std::exception &error) {
             enabled_ = false;
             moving_ = false;
+            disable_hardware();
             state = std::string("ERROR:") + error.what();
         }
 
@@ -305,7 +349,8 @@ private:
             << ";enabled=" << enabled_
             << ";moving=" << moving_
             << ";requested_open=" << requested_open_
-            << ";position=" << current_position_;
+            << ";position=" << current_position_
+            << ";alarm=" << last_alarm_;
         status.data = stream.str();
         status_pub_->publish(status);
     }
@@ -322,9 +367,12 @@ private:
     int closed_position_{0};
     int speed_{20};
     int force_{20};
+    int allowed_alarm_mask_{0};
+    uint16_t last_alarm_{0};
     double movement_timeout_seconds_{2.0};
     bool enabled_{false};
     bool moving_{false};
+    bool has_requested_state_{false};
     bool requested_open_{false};
     int target_position_{0};
     int current_position_{0};
