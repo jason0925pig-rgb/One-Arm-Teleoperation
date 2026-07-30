@@ -357,11 +357,30 @@ arm_stack() {
   verify_robot_safe_to_arm
 
   echo "Safety checks passed. Applying explicit staged hardware gates..."
-  if ! call_set_bool /right_arm/set_powered_on true ||
-     ! wait_status_field "robot_powered_on=1" 30 ||
-     ! call_set_bool /right_arm/set_robot_enabled true ||
-     ! wait_status_field "robot_enabled=1" 30 ||
-     ! call_set_bool /right_arm/set_motion_enabled true ||
+  local status
+  status="$(topic_once /right_arm/safety_status 4 || true)"
+  if grep -Fq "robot_powered_on=1" <<<"${status}"; then
+    echo "Robot is already powered on; skipping the power-on request."
+  elif ! call_set_bool /right_arm/set_powered_on true ||
+       ! wait_status_field "robot_powered_on=1" 30; then
+    echo "ERROR: arming failed during robot power-on." >&2
+    safe_hardware_shutdown || true
+    show_logs
+    exit 6
+  fi
+
+  status="$(topic_once /right_arm/safety_status 4 || true)"
+  if grep -Fq "robot_enabled=1" <<<"${status}"; then
+    echo "Robot is already enabled; skipping the robot-enable request."
+  elif ! call_set_bool /right_arm/set_robot_enabled true ||
+       ! wait_status_field "robot_enabled=1" 30; then
+    echo "ERROR: arming failed during robot enable." >&2
+    safe_hardware_shutdown || true
+    show_logs
+    exit 6
+  fi
+
+  if ! call_set_bool /right_arm/set_motion_enabled true ||
      ! wait_status_field "motion_enabled=1" 10 ||
      ! call_set_bool /right_arm/set_gripper_enabled true ||
      ! call_set_bool /teleop/set_enabled true; then
