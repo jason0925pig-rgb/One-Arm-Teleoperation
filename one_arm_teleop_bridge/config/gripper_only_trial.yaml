@@ -23,7 +23,9 @@ udp_leader_bridge:
     enforce_packet_timestamps_for_motion: true
     max_packet_age_seconds: 0.50
     max_future_skew_seconds: 0.25
-    packet_timeout_seconds: 0.30
+    # The eight-servo Windows scan averages about 17 Hz. Keep enough margin
+    # for observed Wi-Fi/scheduler jitter while retaining a bounded stop.
+    packet_timeout_seconds: 1.00
     follower_state_timeout_seconds: 0.30
 
     # These values are parsed for protocol compatibility but are never used
