@@ -262,9 +262,13 @@ private:
                         current_position_ = position;
                     }
                 } else if (zx_) {
-                    current_position_ =
-                        static_cast<int>(zx_->feedback_position());
-                    zx_->temp_move(current_position_, speed_, force_);
+                    // CTAG2F120 feedback-position registers return zero on the
+                    // installed firmware even after a confirmed move.  Never
+                    // turn that invalid readback into a new position command
+                    // during STOP.  Disabling the actuator is the only
+                    // deterministic no-further-motion action available here.
+                    zx_->enable(false);
+                    zx_.reset();
                 }
             }
         } catch (const std::exception &error) {

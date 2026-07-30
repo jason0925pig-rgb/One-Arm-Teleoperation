@@ -1,0 +1,24 @@
+safe_gripper_controller:
+  ros__parameters:
+    arm_name: "right"
+    gripper_type: "zx"
+    gripper_model: "CTAG2F120"
+    port: "/dev/serial/by-id/usb-1a86_USB_Single_Serial_5ABB000800-if00"
+    slave_id: 1
+    baudrate: 115200
+
+    # Keep the checked-in profile non-moving. The attended launch must
+    # explicitly override this parameter with -p dry_run:=false.
+    dry_run: true
+    configuration_complete: true
+
+    # Confirmed by the legacy Terminal 3 trial on 2026-07-30.
+    open_position: 6000
+    closed_position: 12000
+    speed: 50
+    force: 15
+
+    # Accept only the persistent 0x20 bit observed both before and after the
+    # successful legacy trial. Every other alarm bit remains a hard stop.
+    allowed_alarm_mask: 32
+    movement_timeout_seconds: 4.0

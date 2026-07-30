@@ -1,0 +1,34 @@
+udp_leader_bridge:
+  ros__parameters:
+    bind_host: "0.0.0.0"
+    bind_port: 5005
+    expected_source_ip: "192.168.0.105"
+    require_expected_source_ip_for_motion: true
+    require_single_command_subscriber_for_motion: true
+    arm_name: "right"
+
+    # Keep the checked-in profile non-publishing. The attended launch must
+    # explicitly override this parameter with -p dry_run:=false.
+    dry_run: true
+    calibration_complete: false
+    gripper_only_mode: true
+
+    leader_period_pulses: 2500
+    max_leader_step_pulses: 800.0
+    median_filter_window: 1
+    low_pass_alpha: 1.0
+    leader_deadband_pulses: 0.0
+
+    require_deadman_for_motion: true
+    enforce_packet_timestamps_for_motion: true
+    max_packet_age_seconds: 0.50
+    max_future_skew_seconds: 0.25
+    packet_timeout_seconds: 0.30
+    follower_state_timeout_seconds: 0.30
+
+    # These values are parsed for protocol compatibility but are never used
+    # to publish joint targets while gripper_only_mode is true.
+    joint_signs: [1.0, 1.0, 1.0, 1.0, 1.0, -1.0, 1.0]
+    scale_rad_per_pulse: [0.00235619449, 0.00235619449, 0.00235619449, 0.00235619449, 0.00235619449, 0.00235619449, 0.00235619449]
+    joint_lower_limits: [-6.2832, -1.8325, -6.2832, -2.5307, -6.2832, -1.8325, -6.2832]
+    joint_upper_limits: [6.2832, 1.8325, 6.2832, 0.5235, 6.2832, 1.8325, 6.2832]

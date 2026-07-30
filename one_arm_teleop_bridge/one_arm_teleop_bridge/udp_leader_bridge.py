@@ -37,6 +37,7 @@ class UdpLeaderBridge(Node):
         self.declare_parameter("arm_name", "right")
         self.declare_parameter("dry_run", True)
         self.declare_parameter("calibration_complete", False)
+        self.declare_parameter("gripper_only_mode", False)
         self.declare_parameter("leader_period_pulses", 2500)
         self.declare_parameter("max_leader_step_pulses", 800.0)
         self.declare_parameter("median_filter_window", 1)
@@ -57,6 +58,9 @@ class UdpLeaderBridge(Node):
         self.dry_run = bool(self.get_parameter("dry_run").value)
         self.calibration_complete = bool(
             self.get_parameter("calibration_complete").value
+        )
+        self.gripper_only_mode = bool(
+            self.get_parameter("gripper_only_mode").value
         )
         self.packet_timeout = float(
             self.get_parameter("packet_timeout_seconds").value
@@ -195,54 +199,74 @@ class UdpLeaderBridge(Node):
 
         now = time.monotonic()
         reasons: list[str] = []
-        if not self.calibration_complete:
-            reasons.append("calibration_complete is false")
-        if self.mapper is None:
-            reasons.append(self.mapping_error or "mapping configuration is invalid")
         if (
             self.last_filtered_position is None
             or now - self.last_leader_received > self.packet_timeout
         ):
             reasons.append("no recent leader packet")
-        if (
-            self.last_follower_position is None
-            or now - self.last_follower_received > self.follower_timeout
-        ):
-            reasons.append("no recent follower state")
+        if not self.gripper_only_mode:
+            if not self.calibration_complete:
+                reasons.append("calibration_complete is false")
+            if self.mapper is None:
+                reasons.append(
+                    self.mapping_error or "mapping configuration is invalid"
+                )
+            if (
+                self.last_follower_position is None
+                or now - self.last_follower_received > self.follower_timeout
+            ):
+                reasons.append("no recent follower state")
         if not self.dry_run:
             if self.require_expected_source_ip and not self.expected_source_ip:
                 reasons.append("expected_source_ip is empty")
-            if (
-                self.require_single_command_subscriber
-                and self.command_pub.get_subscription_count() != 1
-            ):
-                reasons.append(
-                    "expected exactly one teleop command subscriber, found "
-                    f"{self.command_pub.get_subscription_count()}"
+            if self.require_single_command_subscriber:
+                active_publisher = (
+                    self.gripper_pub
+                    if self.gripper_only_mode
+                    else self.command_pub
                 )
+                subscriber_count = active_publisher.get_subscription_count()
+                if subscriber_count != 1:
+                    command_kind = (
+                        "gripper" if self.gripper_only_mode else "joint"
+                    )
+                    reasons.append(
+                        f"expected exactly one {command_kind} command "
+                        f"subscriber, found {subscriber_count}"
+                    )
             if not self.enforce_packet_timestamps:
                 reasons.append("packet timestamp enforcement is disabled")
-            if self.require_deadman and not self.last_deadman_held:
+            if (
+                not self.gripper_only_mode
+                and self.require_deadman
+                and not self.last_deadman_held
+            ):
                 reasons.append("Windows deadman is not held")
         if reasons:
             response.success = False
             response.message = "; ".join(reasons)
             return response
 
-        assert self.mapper is not None
-        assert self.last_filtered_position is not None
-        assert self.last_follower_position is not None
-        self.mapper.set_reference(
-            self.last_filtered_position,
-            self.last_follower_position,
-        )
+        if not self.gripper_only_mode:
+            assert self.mapper is not None
+            assert self.last_filtered_position is not None
+            assert self.last_follower_position is not None
+            self.mapper.set_reference(
+                self.last_filtered_position,
+                self.last_follower_position,
+            )
         self.mapping_enabled = True
         response.success = True
-        response.message = (
-            "mapping enabled in preview-only dry-run mode"
-            if self.dry_run
-            else "mapping enabled; command publication active"
-        )
+        if self.gripper_only_mode:
+            response.message = (
+                "gripper-only bridge armed; waiting for Windows Space"
+            )
+        else:
+            response.message = (
+                "mapping enabled in preview-only dry-run mode"
+                if self.dry_run
+                else "mapping enabled; command publication active"
+            )
         self.get_logger().warn(response.message)
         return response
 
@@ -341,10 +365,23 @@ class UdpLeaderBridge(Node):
             self.filtered_pub.publish(filtered_msg)
 
             if not self.mapping_enabled or self.mapper is None:
-                continue
+                if not self.mapping_enabled:
+                    continue
             if self.require_deadman and not frame.deadman_held:
+                # Gripper-only mode is explicitly armed before the operator
+                # presses Space.  Released preview frames must not disarm it;
+                # the second Space/Esc/Ctrl+C sends a dedicated STOP frame.
+                if self.gripper_only_mode:
+                    continue
                 self._request_stop("Windows deadman released")
                 continue
+            if self.gripper_only_mode:
+                if not self.dry_run and frame.gripper_state in {"OPEN", "CLOSED"}:
+                    gripper_msg = Bool()
+                    gripper_msg.data = frame.gripper_state == "OPEN"
+                    self.gripper_pub.publish(gripper_msg)
+                continue
+            assert self.mapper is not None
             try:
                 target = self.mapper.map(filtered_position)
             except SafetyError as exc:
@@ -369,7 +406,10 @@ class UdpLeaderBridge(Node):
         now = time.monotonic()
         if now - self.last_leader_received > self.packet_timeout:
             self._request_stop("leader packet timeout")
-        elif now - self.last_follower_received > self.follower_timeout:
+        elif (
+            not self.gripper_only_mode
+            and now - self.last_follower_received > self.follower_timeout
+        ):
             self._request_stop("follower state timeout")
 
     def _publish_status(self) -> None:
@@ -379,6 +419,7 @@ class UdpLeaderBridge(Node):
         status = String()
         status.data = (
             f"enabled={self.mapping_enabled};dry_run={self.dry_run};"
+            f"gripper_only_mode={self.gripper_only_mode};"
             f"calibration_complete={self.calibration_complete};"
             f"expected_source_ip={self.expected_source_ip or 'UNCONFIGURED'};"
             f"deadman_held={self.last_deadman_held};"
