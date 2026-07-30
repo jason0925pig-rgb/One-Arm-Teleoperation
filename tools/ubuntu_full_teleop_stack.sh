@@ -198,7 +198,6 @@ known_conflicts() {
   for topic in \
     /right_arm/teleop_joint_command \
     /right_arm/joint_control \
-    /right_arm/hand_control \
     /right_arm/gripper_command \
     /gripper_position; do
     info="$(ros2 topic info "${topic}" 2>/dev/null || true)"
