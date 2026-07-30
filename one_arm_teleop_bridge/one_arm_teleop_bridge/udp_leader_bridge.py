@@ -38,6 +38,7 @@ class UdpLeaderBridge(Node):
         self.declare_parameter("dry_run", True)
         self.declare_parameter("calibration_complete", False)
         self.declare_parameter("gripper_only_mode", False)
+        self.declare_parameter("arm_before_deadman", False)
         self.declare_parameter("leader_period_pulses", 2500)
         self.declare_parameter("max_leader_step_pulses", 800.0)
         self.declare_parameter("median_filter_window", 1)
@@ -61,6 +62,9 @@ class UdpLeaderBridge(Node):
         )
         self.gripper_only_mode = bool(
             self.get_parameter("gripper_only_mode").value
+        )
+        self.arm_before_deadman = bool(
+            self.get_parameter("arm_before_deadman").value
         )
         self.packet_timeout = float(
             self.get_parameter("packet_timeout_seconds").value
@@ -237,7 +241,7 @@ class UdpLeaderBridge(Node):
             if not self.enforce_packet_timestamps:
                 reasons.append("packet timestamp enforcement is disabled")
             if (
-                not self.gripper_only_mode
+                not (self.gripper_only_mode or self.arm_before_deadman)
                 and self.require_deadman
                 and not self.last_deadman_held
             ):
@@ -371,7 +375,7 @@ class UdpLeaderBridge(Node):
                 # Gripper-only mode is explicitly armed before the operator
                 # presses Space.  Released preview frames must not disarm it;
                 # the second Space/Esc/Ctrl+C sends a dedicated STOP frame.
-                if self.gripper_only_mode:
+                if self.gripper_only_mode or self.arm_before_deadman:
                     continue
                 self._request_stop("Windows deadman released")
                 continue
@@ -420,6 +424,7 @@ class UdpLeaderBridge(Node):
         status.data = (
             f"enabled={self.mapping_enabled};dry_run={self.dry_run};"
             f"gripper_only_mode={self.gripper_only_mode};"
+            f"arm_before_deadman={self.arm_before_deadman};"
             f"calibration_complete={self.calibration_complete};"
             f"expected_source_ip={self.expected_source_ip or 'UNCONFIGURED'};"
             f"deadman_held={self.last_deadman_held};"

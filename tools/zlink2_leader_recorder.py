@@ -178,6 +178,50 @@ class UdpTeleopSender:
             self.socket.close()
 
 
+class SpaceToggleLatch:
+    """Rising-edge Space toggle shared safely by keyboard and sender threads."""
+
+    def __init__(self) -> None:
+        self._active = False
+        self._space_was_down = False
+        self._lock = threading.Lock()
+
+    def initialize(self, space_down: bool) -> None:
+        with self._lock:
+            self._space_was_down = space_down
+
+    def update(self, space_down: bool) -> str | None:
+        with self._lock:
+            transition = None
+            if space_down and not self._space_was_down:
+                self._active = not self._active
+                transition = "activated" if self._active else "deactivated"
+            self._space_was_down = space_down
+            return transition
+
+    def active(self) -> bool:
+        with self._lock:
+            return self._active
+
+    def deactivate(self) -> None:
+        with self._lock:
+            self._active = False
+
+
+CONTROL_SEPARATOR = "=" * 72
+CONSOLE_PRINT_LOCK = threading.Lock()
+
+
+def control_event_text(title: str, lines: tuple[str, ...]) -> str:
+    return "\n".join((CONTROL_SEPARATOR, title, *lines, CONTROL_SEPARATOR))
+
+
+def print_control_event(title: str, *lines: str) -> None:
+    with CONSOLE_PRINT_LOCK:
+        print()
+        print(control_event_text(title, tuple(lines)), flush=True)
+
+
 class WindowsSafetyKeyboard:
     """Poll Esc/Space independently so a slow serial scan cannot delay STOP."""
 
@@ -191,17 +235,20 @@ class WindowsSafetyKeyboard:
         deadman_required: bool,
         stop_repeat: int,
         stop_interval: float,
+        activation_file: Path | None = None,
     ):
         self.sender = sender
         self.session_id = session_id
         self.deadman_required = deadman_required
         self.stop_repeat = stop_repeat
         self.stop_interval = stop_interval
+        self.activation_file = activation_file
+        self._activation_ready = activation_file is None
         self.stop_requested = threading.Event()
         self.stop_reason: str | None = None
         self._shutdown = threading.Event()
         self._thread: threading.Thread | None = None
-        self._space_was_held = False
+        self._deadman_latch = SpaceToggleLatch()
         self._user32: Any | None = None
         if sys.platform == "win32":
             import ctypes
@@ -217,12 +264,15 @@ class WindowsSafetyKeyboard:
         )
 
     def deadman_held(self) -> bool:
-        return self._key_down(self.VK_SPACE) if self.deadman_required else False
+        return self._deadman_latch.active() if self.deadman_required else False
+
+    def activation_ready(self) -> bool:
+        return self._activation_ready
 
     def start(self) -> None:
         if self._user32 is None:
             return
-        self._space_was_held = self.deadman_held()
+        self._deadman_latch.initialize(self._key_down(self.VK_SPACE))
         self._thread = threading.Thread(
             target=self._run,
             name="teleop-safety-keyboard",
@@ -238,8 +288,15 @@ class WindowsSafetyKeyboard:
     def request_stop(self, reason: str) -> None:
         if self.stop_requested.is_set():
             return
+        self._deadman_latch.deactivate()
         self.stop_reason = reason
         self.stop_requested.set()
+        print_control_event(
+            "TELEOP STOP REQUESTED / 已请求停止遥操作",
+            f"Reason / 原因: {reason}",
+            "STOP packets are being sent now; robot motion is no longer allowed.",
+            "正在发送重复 STOP 数据包；机器人运动许可已关闭。",
+        )
         if self.sender is not None:
             self.sender.send_stop(
                 self.session_id,
@@ -258,11 +315,40 @@ class WindowsSafetyKeyboard:
             escape_was_down = escape_down
 
             if self.deadman_required:
-                space_held = self.deadman_held()
-                if self._space_was_held and not space_held:
-                    self.request_stop("deadman_released")
+                space_down = self._key_down(self.VK_SPACE)
+                if not self._activation_ready:
+                    # Keep the rising-edge detector synchronized so a Space
+                    # key held before READY cannot activate motion when the
+                    # external orchestrator opens the gate.
+                    self._deadman_latch.initialize(space_down)
+                    if (
+                        self.activation_file is not None
+                        and self.activation_file.is_file()
+                    ):
+                        self._activation_ready = True
+                        print_control_event(
+                            "REMOTE STACK READY / 远端控制栈已就绪",
+                            "Initial checks and start-pose capture passed.",
+                            "初始检查与主从起始位姿捕获已完成。",
+                            "Release Space if it is held, then press Space once to START.",
+                            "若正在按住Space，请先松开，再按一次Space开始遥操作。",
+                        )
+                    continue
+                transition = self._deadman_latch.update(
+                    space_down
+                )
+                if transition == "activated":
+                    print_control_event(
+                        "TELEOP ACTIVE / 遥操作已开启",
+                        "Space latch: ON",
+                        "The follower arm may move now when the leader arm moves.",
+                        "现在移动主臂时，从臂可能立即跟随运动。",
+                        "Press Space again, Esc, or Ctrl+C to STOP.",
+                        "再次按 Space、Esc 或 Ctrl+C 可停止。",
+                    )
+                elif transition == "deactivated":
+                    self.request_stop("deadman_toggled_off")
                     return
-                self._space_was_held = space_held
 
 
 def unique_session_directory(root: Path, session_name: str) -> Path:
@@ -575,6 +661,9 @@ def record_session(
         raise RuntimeError(
             f"cannot start: no baseline reply from servo IDs {missing_baseline}"
         )
+    baseline_summary = " ".join(
+        f"{label}={baseline[ids_by_label[label]]}" for label in labels
+    )
 
     session_dir = unique_session_directory(args.output_root, args.session_name)
     csv_path = session_dir / "frames.csv"
@@ -601,6 +690,7 @@ def record_session(
         args.deadman,
         args.stop_repeat,
         args.stop_interval,
+        args.activation_file,
     )
 
     requested_period = 1.0 / args.rate_hz
@@ -620,8 +710,29 @@ def record_session(
     print(f"Recording session: {session_dir}")
     print("Safety mode: PRAD query only; no position command is present.")
     if args.deadman:
-        print("Deadman enabled: hold Space for live frames; releasing it sends STOP.")
-    print("Press Esc or Ctrl+C to send STOP and finalize metadata.")
+        if args.activation_file is not None:
+            print_control_event(
+                "START POSE CAPTURED / 起始位姿已记录",
+                f"Baseline pulses / 起始脉冲: {baseline_summary}",
+                "UDP preview is active; remote initial checks are running.",
+                "UDP预览已开始；正在等待远端完成初始检查。",
+                "Do NOT press Space until REMOTE STACK READY is displayed.",
+                "显示“远端控制栈已就绪”之前不要按Space。",
+            )
+        else:
+            print_control_event(
+                "START POSE CAPTURED / 起始位姿已记录",
+                f"Baseline pulses / 起始脉冲: {baseline_summary}",
+                "Robot motion is still OFF. Recording and UDP preview are active.",
+                "机器人当前仍不会运动；CSV记录和UDP预览已经开始。",
+                "Press Space once when you are ready to START teleoperation.",
+                "确认安全后，按一次Space开启遥操作。",
+            )
+    else:
+        print(
+            "Recording is active. Press Esc or Ctrl+C to stop and finalize "
+            "metadata."
+        )
     safety_keyboard.start()
 
     try:
@@ -679,13 +790,23 @@ def record_session(
                         f"{label}={sample.pulses.get(ids_by_label[label], '-')}"
                         for label in labels
                     )
-                    print(
-                        f"frames={sequence} elapsed={elapsed:.1f}s "
-                        f"rate={actual_rate:.2f}Hz complete={complete_frames}/{sequence} "
-                        f"| {pulse_summary} "
-                        f"gripper_state={row.get('gripper_state', '-')}",
-                        flush=True,
-                    )
+                    if not args.deadman:
+                        teleop_state = "RECORD_ONLY"
+                    else:
+                        teleop_state = (
+                            "ACTIVE"
+                            if safety_keyboard.deadman_held()
+                            else "WAITING_FOR_SPACE"
+                        )
+                    with CONSOLE_PRINT_LOCK:
+                        print(
+                            f"frames={sequence} elapsed={elapsed:.1f}s "
+                            f"rate={actual_rate:.2f}Hz "
+                            f"complete={complete_frames}/{sequence} "
+                            f"teleop={teleop_state} | {pulse_summary} "
+                            f"gripper_state={row.get('gripper_state', '-')}",
+                            flush=True,
+                        )
                     last_status = now
 
                 if (
@@ -711,7 +832,11 @@ def record_session(
                     next_deadline = time.monotonic()
     except KeyboardInterrupt:
         stop_reason = "user_stopped"
-        print("\nStop requested; finalizing the session.")
+        print_control_event(
+            "CTRL+C RECEIVED / 已收到 Ctrl+C",
+            "STOP will be sent and the session will be finalized.",
+            "即将发送 STOP 并保存本次 CSV 与元数据。",
+        )
     except Exception as exc:
         stop_reason = "error"
         error_text = f"{type(exc).__name__}: {exc}"
@@ -835,8 +960,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--deadman",
         action="store_true",
         help=(
-            "mark live frames active only while Space is held; releasing Space "
+            "press Space once to latch live frames on; pressing Space again "
             "sends repeated STOP packets and ends the session"
+        ),
+    )
+    parser.add_argument(
+        "--activation-file",
+        type=Path,
+        help=(
+            "optional external READY file; Space remains disabled until this "
+            "file exists"
         ),
     )
     parser.add_argument(
@@ -914,6 +1047,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("--stop-interval must be between 0 and 0.20 seconds")
     if args.deadman and args.udp_target is None:
         raise SystemExit("--deadman requires --udp-target")
+    if args.activation_file is not None and not args.deadman:
+        raise SystemExit("--activation-file requires --deadman")
 
 
 def main() -> int:
@@ -922,6 +1057,8 @@ def main() -> int:
     mapping_path = args.mapping.expanduser().resolve()
     gripper_config_path = args.gripper_config.expanduser().resolve()
     args.output_root = args.output_root.expanduser().resolve()
+    if args.activation_file is not None:
+        args.activation_file = args.activation_file.expanduser().resolve()
 
     try:
         labels, ids_by_label, mapping_raw = load_mapping(mapping_path)

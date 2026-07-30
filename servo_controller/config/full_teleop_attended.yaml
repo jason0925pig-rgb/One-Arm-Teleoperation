@@ -1,0 +1,52 @@
+safe_one_arm_servo:
+  ros__parameters:
+    arm_name: "right"
+    robot_ip: "192.168.2.226"
+    robot_port: 10020
+
+    # The checked-in profile cannot move until the PowerShell orchestrator
+    # explicitly overrides these four gates for an attended session.
+    dry_run: true
+    hardware_power_authorized: false
+    hardware_enable_authorized: false
+    hardware_motion_authorized: false
+    limits_configured: true
+    power_on_on_arm: false
+    enable_robot_on_arm: false
+    disable_robot_on_disarm: false
+
+    # Requested operator-command/network watchdog. Fresh robot feedback keeps
+    # its independent 300 ms watchdog and is never relaxed to three seconds.
+    command_timeout_seconds: 3.0
+    feedback_timeout_seconds: 0.30
+    control_rate_hz: 125.0
+    state_rate_hz: 20.0
+    control_deadline_warning_factor: 1.5
+    control_deadline_abort_seconds: 0.05
+    require_single_command_publisher: true
+
+    joint_lower_limits: [-6.2832, -1.8325, -6.2832, -2.5307, -6.2832, -1.8325, -6.2832]
+    joint_upper_limits: [6.2832, 1.8325, 6.2832, 0.5235, 6.2832, 1.8325, 6.2832]
+
+    # Three times the previously attended 0.30 rad/s velocity. Acceleration is
+    # intentionally unchanged at 0.60 rad/s^2.
+    max_velocity_rad_s: [0.90, 0.90, 0.90, 0.90, 0.90, 0.90, 0.90]
+    max_acceleration_rad_s2: [0.60, 0.60, 0.60, 0.60, 0.60, 0.60, 0.60]
+
+safe_gripper_controller:
+  ros__parameters:
+    arm_name: "right"
+    gripper_type: "zx"
+    gripper_model: "CTAG2F120"
+    port: "/dev/serial/by-id/usb-1a86_USB_Single_Serial_5ABB000800-if00"
+    slave_id: 1
+    baudrate: 115200
+
+    dry_run: true
+    configuration_complete: true
+    open_position: 2000
+    closed_position: 12000
+    speed: 75
+    force: 25
+    allowed_alarm_mask: 32
+    movement_timeout_seconds: 4.0

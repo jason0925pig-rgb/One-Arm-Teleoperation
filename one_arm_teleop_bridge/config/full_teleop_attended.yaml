@@ -1,0 +1,38 @@
+udp_leader_bridge:
+  ros__parameters:
+    bind_host: "0.0.0.0"
+    bind_port: 5005
+    expected_source_ip: "192.168.0.105"
+    require_expected_source_ip_for_motion: true
+    require_single_command_subscriber_for_motion: true
+    arm_name: "right"
+
+    # The checked-in profile remains preview-only. The attended launcher must
+    # explicitly override dry_run after all conflict checks pass.
+    dry_run: true
+    calibration_complete: true
+    gripper_only_mode: false
+    arm_before_deadman: true
+
+    leader_period_pulses: 2500
+    max_leader_step_pulses: 800.0
+
+    # Light smoothing: reject one-frame spikes, then use a responsive low-pass
+    # and suppress two-pulse encoder chatter.
+    median_filter_window: 3
+    low_pass_alpha: 0.45
+    leader_deadband_pulses: 2.0
+
+    require_deadman_for_motion: true
+    enforce_packet_timestamps_for_motion: true
+    max_packet_age_seconds: 0.50
+    max_future_skew_seconds: 0.25
+    packet_timeout_seconds: 3.0
+
+    # Actual robot feedback remains independently guarded at 300 ms.
+    follower_state_timeout_seconds: 0.30
+
+    joint_signs: [1.0, 1.0, 1.0, 1.0, 1.0, -1.0, 1.0]
+    scale_rad_per_pulse: [0.00235619449, 0.00235619449, 0.00235619449, 0.00235619449, 0.00235619449, 0.00235619449, 0.00235619449]
+    joint_lower_limits: [-6.2832, -1.8325, -6.2832, -2.5307, -6.2832, -1.8325, -6.2832]
+    joint_upper_limits: [6.2832, 1.8325, 6.2832, 0.5235, 6.2832, 1.8325, 6.2832]
