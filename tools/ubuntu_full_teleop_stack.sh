@@ -67,7 +67,10 @@ wait_for_service() {
 topic_once() {
   local topic_name="$1"
   local timeout_seconds="${2:-3}"
-  timeout "${timeout_seconds}" ros2 topic echo --once "${topic_name}" 2>/dev/null
+  # Jazzy truncates strings after 128 characters by default. Safety and
+  # bridge status fields used for arming are beyond that boundary.
+  timeout "${timeout_seconds}" \
+    ros2 topic echo --full-length --once "${topic_name}" 2>/dev/null
 }
 
 wait_status_field() {
