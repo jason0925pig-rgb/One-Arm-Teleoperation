@@ -163,11 +163,19 @@ show_logs() {
 }
 
 known_conflicts() {
-  local matches nodes owners real_device
-  matches="$(
+  local candidates matches nodes owners real_device topic info count
+  candidates="$(
     pgrep -af \
-      'robot_timer|test_joint_trajectory_sub|gripper_controller|safe_one_arm_servo|safe_gripper_controller|udp_leader_bridge' \
+      'robot_timer|test_joint_trajectory_sub|gripper_controller|safe_one_arm_servo|safe_gripper_controller|udp_leader_bridge|tele_robot' \
       2>/dev/null || true
+  )"
+  # Only treat an actual installed executable or an explicit ros2 run/launch
+  # command as a process conflict. A grep/editor merely reading a source path
+  # such as .../src/gripper_controller/... must not block startup.
+  matches="$(
+    grep -E \
+      '(/install/[^ ]*/lib/[^ ]*/(robot_timer|test_joint_trajectory_sub|gripper_controller|safe_one_arm_servo|safe_gripper_controller|udp_leader_bridge)([[:space:]]|$)|(^|[[:space:]])ros2[[:space:]]+(run|launch)[[:space:]]+(servo_controller|gripper_controller|one_arm_teleop_bridge)([[:space:]]|$)|(^|[[:space:]])(\./|/[^ ]*/)(tele_robot|robot_timer|test_joint_trajectory_sub)([[:space:]]|$))' \
+      <<<"${candidates}" || true
   )"
   if [[ -n "${matches}" ]]; then
     echo "ERROR: a known robot/gripper process is already running:" >&2
@@ -177,12 +185,27 @@ known_conflicts() {
 
   nodes="$(ros2 node list 2>/dev/null || true)"
   if grep -Eq \
-    '^/(robot_timer|gripper_controller|safe_one_arm_servo|safe_gripper_controller|udp_leader_bridge)$' \
+    '^/(robot_timer|gripper_controller|test_joint_trajectory_sub|test_joint_trajectory_subscriber|safe_one_arm_servo|safe_gripper_controller|udp_leader_bridge)$' \
     <<<"${nodes}"; then
     echo "ERROR: a conflicting ROS 2 node is visible:" >&2
     printf '%s\n' "${nodes}" >&2
     return 1
   fi
+
+  for topic in \
+    /right_arm/teleop_joint_command \
+    /right_arm/joint_control \
+    /right_arm/hand_control \
+    /right_arm/gripper_command \
+    /gripper_position; do
+    info="$(ros2 topic info "${topic}" 2>/dev/null || true)"
+    count="$(sed -n 's/^Publisher count: //p' <<<"${info}")"
+    count="${count:-0}"
+    if [[ "${count}" =~ ^[0-9]+$ ]] && (( count > 0 )); then
+      echo "ERROR: ${topic} already has ${count} publisher(s)." >&2
+      return 1
+    fi
+  done
 
   if [[ ! -e "${GRIPPER_DEVICE}" ]]; then
     echo "ERROR: CTAG2F120 serial path is missing: ${GRIPPER_DEVICE}" >&2
@@ -388,8 +411,12 @@ case "${ACTION}" in
   status)
     show_status
     ;;
+  preflight)
+    known_conflicts
+    echo "PREFLIGHT_OK"
+    ;;
   *)
-    echo "Usage: $0 {start|arm|stop|status} [expected_windows_source_ip]" >&2
+    echo "Usage: $0 {start|arm|stop|status|preflight} [expected_windows_source_ip]" >&2
     exit 2
     ;;
 esac
