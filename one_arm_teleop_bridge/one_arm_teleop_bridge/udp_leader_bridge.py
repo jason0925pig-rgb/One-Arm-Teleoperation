@@ -135,6 +135,7 @@ class UdpLeaderBridge(Node):
         self.last_follower_received = 0.0
         self.mapping_enabled = False
         self.accepted_packets = 0
+        self.consecutive_accepted_packets = 0
         self.rejected_packets = 0
         self.last_rejection_reason = "none"
         self.stop_requests = 0
@@ -322,6 +323,7 @@ class UdpLeaderBridge(Node):
                 return
             if self.expected_source_ip and source[0] != self.expected_source_ip:
                 self.rejected_packets += 1
+                self.consecutive_accepted_packets = 0
                 self.last_rejection_reason = (
                     f"unexpected_source:{source[0]}"
                 )
@@ -357,12 +359,14 @@ class UdpLeaderBridge(Node):
                 filtered_position = self.signal_filter.update(leader_position)
             except (PacketError, SafetyError) as exc:
                 self.rejected_packets += 1
+                self.consecutive_accepted_packets = 0
                 self.last_rejection_reason = str(exc).replace(";", ",")
                 if self.mapping_enabled:
                     self._request_stop(str(exc))
                 continue
 
             self.accepted_packets += 1
+            self.consecutive_accepted_packets += 1
             self.last_sequence = frame.sequence
             self.last_leader_position = leader_position
             self.last_filtered_position = filtered_position
@@ -440,6 +444,7 @@ class UdpLeaderBridge(Node):
             f"sequence={self.last_sequence if self.last_sequence is not None else -1};"
             f"packet_age_s={self.last_packet_age_seconds if self.last_packet_age_seconds is not None else -1:.3f};"
             f"accepted_packets={self.accepted_packets};"
+            f"consecutive_accepted_packets={self.consecutive_accepted_packets};"
             f"rejected_packets={self.rejected_packets};"
             f"last_rejection={self.last_rejection_reason};"
             f"stop_requests={self.stop_requests}"

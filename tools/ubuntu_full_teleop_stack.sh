@@ -301,13 +301,22 @@ start_stack() {
 wait_for_leader_preview() {
   local deadline=$((SECONDS + 120))
   local output=""
+  local consecutive="0"
   echo "Waiting for Windows Enter/start-pose capture and fresh UDP preview..."
   while (( SECONDS < deadline )); do
     output="$(topic_once /teleop/bridge_status 2 || true)"
+    consecutive="$(
+      sed -n \
+        's/.*consecutive_accepted_packets=\([0-9][0-9]*\).*/\1/p' \
+        <<<"${output}"
+    )"
+    consecutive="${consecutive:-0}"
     if grep -Eq 'session=(none)?;' <<<"${output}"; then
       :
     elif grep -Eq 'sequence=[0-9]+' <<<"${output}" &&
-         grep -Fq 'deadman_held=False' <<<"${output}"; then
+         grep -Fq 'deadman_held=False' <<<"${output}" &&
+         [[ "${consecutive}" =~ ^[0-9]+$ ]] &&
+         (( consecutive >= 5 )); then
       printf '%s\n' "${output}"
       return 0
     fi

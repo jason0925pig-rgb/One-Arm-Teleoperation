@@ -26,7 +26,9 @@ udp_leader_bridge:
     require_deadman_for_motion: true
     enforce_packet_timestamps_for_motion: true
     max_packet_age_seconds: 0.50
-    max_future_skew_seconds: 0.25
+    # Windows currently leads Ubuntu by roughly 0.23-0.34 s. Keep timestamp
+    # validation enabled while allowing that measured sub-second clock skew.
+    max_future_skew_seconds: 0.50
     packet_timeout_seconds: 3.0
 
     # Actual robot feedback remains independently guarded at 300 ms.
