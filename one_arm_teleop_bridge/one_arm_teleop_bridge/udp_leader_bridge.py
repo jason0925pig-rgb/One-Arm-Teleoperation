@@ -40,7 +40,9 @@ class UdpLeaderBridge(Node):
         self.declare_parameter("calibration_complete", False)
         self.declare_parameter("gripper_only_mode", False)
         self.declare_parameter("arm_before_deadman", False)
-        self.declare_parameter("leader_period_pulses", 2500)
+        self.declare_parameter("leader_period_pulses", 2000)
+        self.declare_parameter("leader_min_valid_pulse", 500)
+        self.declare_parameter("leader_max_valid_pulse", 2500)
         self.declare_parameter("max_leader_step_pulses", 800.0)
         self.declare_parameter("median_filter_window", 1)
         self.declare_parameter("low_pass_alpha", 1.0)
@@ -117,6 +119,16 @@ class UdpLeaderBridge(Node):
             int(self.get_parameter("leader_period_pulses").value),
             float(self.get_parameter("max_leader_step_pulses").value),
         )
+        self.leader_min_valid_pulse = int(
+            self.get_parameter("leader_min_valid_pulse").value
+        )
+        self.leader_max_valid_pulse = int(
+            self.get_parameter("leader_max_valid_pulse").value
+        )
+        if self.leader_min_valid_pulse >= self.leader_max_valid_pulse:
+            raise ValueError(
+                "leader_min_valid_pulse must be below leader_max_valid_pulse"
+            )
         self.signal_filter = LeaderSignalFilter(
             median_window=int(self.get_parameter("median_filter_window").value),
             low_pass_alpha=float(self.get_parameter("low_pass_alpha").value),
@@ -355,6 +367,18 @@ class UdpLeaderBridge(Node):
                         self._request_stop("leader session changed")
                 if self.last_sequence is not None and frame.sequence <= self.last_sequence:
                     raise PacketError("sequence is not newer than the previous packet")
+                if not self.gripper_only_mode:
+                    for index, pulse in enumerate(frame.joint_pulses):
+                        if not (
+                            self.leader_min_valid_pulse
+                            <= pulse
+                            <= self.leader_max_valid_pulse
+                        ):
+                            raise PacketError(
+                                f"leader joint {index + 1} pulse {pulse} is "
+                                f"outside [{self.leader_min_valid_pulse}, "
+                                f"{self.leader_max_valid_pulse}]"
+                            )
                 leader_position = self.unwrapper.update(frame.joint_pulses)
                 filtered_position = self.signal_filter.update(leader_position)
             except (PacketError, SafetyError) as exc:

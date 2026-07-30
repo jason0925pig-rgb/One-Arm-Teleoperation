@@ -14,7 +14,11 @@ udp_leader_bridge:
     gripper_only_mode: false
     arm_before_deadman: true
 
-    leader_period_pulses: 2500
+    # The seven arm encoders wrap from 2500 back to 500 (2000 pulses).
+    # A returned zero is not a valid arm position and must not reach mapping.
+    leader_period_pulses: 2000
+    leader_min_valid_pulse: 500
+    leader_max_valid_pulse: 2500
     max_leader_step_pulses: 800.0
 
     # Light smoothing: reject one-frame spikes, then use a responsive low-pass
