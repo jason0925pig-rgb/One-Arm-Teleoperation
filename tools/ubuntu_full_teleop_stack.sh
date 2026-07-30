@@ -3,7 +3,7 @@
 # Starting processes is motion-free. Hardware motion is authorized only by
 # the explicit "arm" action after leader preview and robot safety checks pass.
 
-set -Eeuo pipefail
+set -Eeo pipefail
 
 ACTION="${1:-status}"
 EXPECTED_SOURCE_IP="${2:-${ONE_ARM_WINDOWS_IP:-192.168.0.105}}"
@@ -31,6 +31,7 @@ fi
 source "${ROS_SETUP}"
 # shellcheck disable=SC1090
 source "${WORKSPACE_SETUP}"
+set -u
 
 component_pid_file() {
   printf '%s/%s.pid\n' "${RUNTIME_DIR}" "$1"
