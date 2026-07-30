@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import signal
@@ -26,14 +27,30 @@ DEFAULT_TOPICS = (
     "/teleop/enabled",
     "/teleop/stop_request",
     "/right_arm/teleop_joint_command",
+    "/right_arm/executed_joint_command",
     "/right_arm/joint_states",
     "/right_arm/safety_status",
     "/right_arm/motion_enabled",
     "/right_arm/powered_on",
     "/right_arm/robot_enabled",
     "/right_arm/gripper_command",
+    "/right_arm/executed_gripper_command",
     "/right_arm/gripper_state",
     "/right_arm/gripper_status",
+    "/right_arm/gripper_feedback_valid",
+    "/right_arm/gripper_contact",
+)
+DEFAULT_HEAD_TOPIC = "/cameras/head/image_raw/compressed"
+DEFAULT_WRIST_TOPIC = "/cameras/wrist/image_raw/compressed"
+DEFAULT_HEAD_STATUS_TOPIC = "/cameras/head/status"
+DEFAULT_WRIST_STATUS_TOPIC = "/cameras/wrist/status"
+LEROBOT_REQUIRED_TOPICS = (
+    "/right_arm/executed_joint_command",
+    "/right_arm/joint_states",
+    "/right_arm/gripper_command",
+    "/right_arm/executed_gripper_command",
+    "/right_arm/gripper_feedback_valid",
+    "/right_arm/gripper_contact",
 )
 
 
@@ -79,6 +96,20 @@ def available_topics() -> set[str]:
     return {line.strip() for line in result.stdout.splitlines() if line.strip()}
 
 
+def topic_publisher_count(topic: str) -> int:
+    result = subprocess.run(
+        ["ros2", "topic", "info", topic],
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if result.returncode != 0:
+        return 0
+    match = re.search(r"Publisher count:\s*(\d+)", result.stdout)
+    return int(match.group(1)) if match else 0
+
+
 def unique_episode_directory(root: Path, name: str) -> Path:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     base = root / f"{timestamp}_{safe_name(name)}"
@@ -108,6 +139,23 @@ def build_parser() -> argparse.ArgumentParser:
         default="unknown",
     )
     parser.add_argument("--duration", type=float)
+    parser.add_argument(
+        "--profile",
+        choices=("lerobot", "debug"),
+        default="lerobot",
+        help=(
+            "lerobot requires state, executed action, gripper and both cameras; "
+            "debug permits incomplete topic sets"
+        ),
+    )
+    parser.add_argument(
+        "--fps",
+        type=int,
+        default=30,
+        help="target LeRobot export FPS stored in episode metadata",
+    )
+    parser.add_argument("--head-topic", default=DEFAULT_HEAD_TOPIC)
+    parser.add_argument("--wrist-topic", default=DEFAULT_WRIST_TOPIC)
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument(
         "--extra-topic",
@@ -137,7 +185,21 @@ def build_parser() -> argparse.ArgumentParser:
 def validate_args(args: argparse.Namespace) -> None:
     if args.duration is not None and args.duration <= 0.0:
         raise SystemExit("--duration must be positive")
-    for topic in (*args.extra_topic, *args.require_topic):
+    if args.fps <= 0:
+        raise SystemExit("--fps must be positive")
+    if args.profile == "lerobot":
+        if not args.task:
+            raise SystemExit("--task is required for the lerobot profile")
+        if args.task != args.task.strip():
+            raise SystemExit(
+                "--task must not contain leading or trailing whitespace"
+            )
+    for topic in (
+        args.head_topic,
+        args.wrist_topic,
+        *args.extra_topic,
+        *args.require_topic,
+    ):
         if not topic.startswith("/") or any(character.isspace() for character in topic):
             raise SystemExit(f"invalid ROS topic name: {topic!r}")
 
@@ -152,7 +214,11 @@ def main() -> int:
         print(f"ERROR: ROS2 topic discovery failed: {exc}", file=sys.stderr)
         return 2
 
-    missing_required = sorted(set(args.require_topic) - visible_topics)
+    required_topics = set(args.require_topic)
+    if args.profile == "lerobot":
+        required_topics.update(LEROBOT_REQUIRED_TOPICS)
+        required_topics.update((args.head_topic, args.wrist_topic))
+    missing_required = sorted(required_topics - visible_topics)
     if missing_required:
         print(
             "ERROR: required topics are absent: " + ", ".join(missing_required),
@@ -160,7 +226,31 @@ def main() -> int:
         )
         return 3
 
-    topics = tuple(dict.fromkeys((*DEFAULT_TOPICS, *args.extra_topic)))
+    missing_publishers = sorted(
+        topic
+        for topic in required_topics
+        if topic_publisher_count(topic) < 1
+    )
+    if missing_publishers:
+        print(
+            "ERROR: required topics have no active publisher: "
+            + ", ".join(missing_publishers),
+            file=sys.stderr,
+        )
+        return 3
+
+    camera_topics = (args.head_topic, args.wrist_topic)
+    topics = tuple(
+        dict.fromkeys(
+            (
+                *DEFAULT_TOPICS,
+                *camera_topics,
+                DEFAULT_HEAD_STATUS_TOPIC,
+                DEFAULT_WRIST_STATUS_TOPIC,
+                *args.extra_topic,
+            )
+        )
+    )
     print("Passive episode topics:")
     for topic in topics:
         state = "visible" if topic in visible_topics else "waiting"
@@ -187,11 +277,14 @@ def main() -> int:
     ]
     metadata: dict[str, Any] = {
         "format": "one_arm_teleoperation_episode",
-        "format_version": 1,
+        "format_version": 2,
         "status": "recording",
         "outcome": args.outcome,
         "name": args.name,
         "task": args.task,
+        "task_sha256": hashlib.sha256(
+            args.task.encode("utf-8")
+        ).hexdigest(),
         "operator": args.operator,
         "notes": args.notes,
         "host": socket.gethostname(),
@@ -204,6 +297,23 @@ def main() -> int:
         ),
         "ros_distro": run_text(["printenv", "ROS_DISTRO"]),
         "storage": args.storage,
+        "recording_profile": args.profile,
+        "target_lerobot_fps": args.fps,
+        "camera_topics": {
+            "observation.images.head": args.head_topic,
+            "observation.images.wrist_right": args.wrist_topic,
+        },
+        "joint_state_topic": "/right_arm/joint_states",
+        "executed_action_topic": "/right_arm/executed_joint_command",
+        "gripper_requested_action_topic": "/right_arm/gripper_command",
+        "gripper_action_topic": "/right_arm/executed_gripper_command",
+        "gripper_semantics": {
+            "normalized_open": 0.0,
+            "normalized_closed": 1.0,
+            "observation_source": (
+                "commanded_state_estimate_until_valid_position_feedback_exists"
+            ),
+        },
         "topics": list(topics),
         "visible_topics_at_start": sorted(visible_topics),
         "ros2_topic_types_at_start": run_text(["ros2", "topic", "list", "-t"]),

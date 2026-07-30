@@ -90,6 +90,8 @@ public:
                 std::placeholders::_1));
         state_pub_ = create_publisher<sensor_msgs::msg::JointState>(
             prefix + "/joint_states", 10);
+        executed_command_pub_ = create_publisher<sensor_msgs::msg::JointState>(
+            prefix + "/executed_joint_command", 10);
         enabled_pub_ = create_publisher<std_msgs::msg::Bool>(
             prefix + "/motion_enabled", 10);
         powered_pub_ = create_publisher<std_msgs::msg::Bool>(
@@ -761,7 +763,20 @@ private:
 #endif
         if (result != ERR_SUCC) {
             disarm_locked("JAKA absolute servo command returned an error");
+            return;
         }
+
+        // Publish the exact post-slew-limit joint target accepted by the SDK.
+        // The upstream teleop_joint_command is only the desired target and can
+        // differ from this value while velocity/acceleration limiting is active.
+        sensor_msgs::msg::JointState executed;
+        executed.header.stamp = this->now();
+        executed.name = joint_names_;
+        executed.position.assign(
+            current_command_.begin(), current_command_.end());
+        executed.velocity.assign(
+            command_velocity_.begin(), command_velocity_.end());
+        executed_command_pub_->publish(executed);
     }
 
     void state_tick() {
@@ -1048,6 +1063,8 @@ private:
     rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr command_sub_;
     rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr stop_sub_;
     rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr state_pub_;
+    rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr
+        executed_command_pub_;
     rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr enabled_pub_;
     rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr powered_pub_;
     rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr robot_enabled_pub_;

@@ -1,0 +1,35 @@
+head_camera_publisher:
+  ros__parameters:
+    camera_name: head
+    frame_id: head_camera_optical_frame
+    device: ""
+    # Recovered from the legacy body-teleoperation recorder. Verify on hardware.
+    device_serial: CP8A9450002M
+    compressed_topic: /cameras/head/image_raw/compressed
+    status_topic: /cameras/head/status
+    width: 1280
+    height: 720
+    fps: 30.0
+    fourcc: MJPG
+    jpeg_quality: 90
+    strict_format: true
+    auto_exposure: true
+    exposure: -1.0
+
+wrist_camera_publisher:
+  ros__parameters:
+    camera_name: wrist
+    frame_id: right_wrist_camera_optical_frame
+    device: ""
+    # Recovered from the legacy body-teleoperation recorder. Verify on hardware.
+    device_serial: CP8A9450001Z
+    compressed_topic: /cameras/wrist/image_raw/compressed
+    status_topic: /cameras/wrist/status
+    width: 1280
+    height: 720
+    fps: 30.0
+    fourcc: MJPG
+    jpeg_quality: 90
+    strict_format: true
+    auto_exposure: true
+    exposure: -1.0

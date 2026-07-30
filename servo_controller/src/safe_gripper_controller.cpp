@@ -7,6 +7,7 @@
 #include "DH_gripper.hpp"
 #include "ZX_gripper.h"
 
+#include <algorithm>
 #include <chrono>
 #include <functional>
 #include <memory>
@@ -58,6 +59,12 @@ public:
             prefix + "/gripper_state", 10);
         status_pub_ = create_publisher<std_msgs::msg::String>(
             prefix + "/gripper_status", 10);
+        feedback_valid_pub_ = create_publisher<std_msgs::msg::Bool>(
+            prefix + "/gripper_feedback_valid", 10);
+        contact_pub_ = create_publisher<std_msgs::msg::Bool>(
+            prefix + "/gripper_contact", 10);
+        executed_command_pub_ = create_publisher<std_msgs::msg::Bool>(
+            prefix + "/executed_gripper_command", 10);
         enable_service_ = create_service<std_srvs::srv::SetBool>(
             prefix + "/set_gripper_enabled",
             std::bind(
@@ -198,6 +205,7 @@ private:
                 zx_->enable(false);
                 zx_.reset();
             }
+            feedback_position_valid_ = false;
         } catch (const std::exception &error) {
             RCLCPP_ERROR(get_logger(), "Gripper disable failed: %s", error.what());
         }
@@ -209,11 +217,16 @@ private:
             return;
         }
         if (has_requested_state_ && message->data == requested_open_) {
+            std_msgs::msg::Bool executed;
+            executed.data = requested_open_;
+            executed_command_pub_->publish(executed);
             return;
         }
         requested_open_ = message->data;
         has_requested_state_ = true;
         target_position_ = requested_open_ ? open_position_ : closed_position_;
+        contact_ = false;
+        feedback_position_valid_ = false;
         try {
             if (!dry_run_) {
                 if (dh_) {
@@ -234,6 +247,9 @@ private:
             current_position_ = target_position_;
             moving_ = true;
             movement_started_ = std::chrono::steady_clock::now();
+            std_msgs::msg::Bool executed;
+            executed.data = requested_open_;
+            executed_command_pub_->publish(executed);
         } catch (const std::exception &error) {
             enabled_ = false;
             moving_ = false;
@@ -294,31 +310,47 @@ private:
                     dh_->GetCurrentPosition(position);
                     dh_->GetGripState(grip_state);
                     current_position_ = position;
+                    feedback_position_valid_ = true;
                     if (grip_state == DH_Gripper::S_GRIP_CAUGHT) {
                         moving_ = false;
+                        contact_ = true;
                         state = "CAUGHT";
                     } else if (grip_state == DH_Gripper::S_GRIP_ARRIVED) {
                         moving_ = false;
+                        contact_ = false;
                         state = "POSITION_REACHED";
                     } else {
                         state = "MOVING";
                     }
                 } else if (zx_) {
-                    current_position_ =
+                    const int reported_position =
                         static_cast<int>(zx_->feedback_position());
+                    const int minimum_position =
+                        std::min(open_position_, closed_position_);
+                    const int maximum_position =
+                        std::max(open_position_, closed_position_);
+                    feedback_position_valid_ =
+                        reported_position >= minimum_position &&
+                        reported_position <= maximum_position;
+                    if (feedback_position_valid_) {
+                        current_position_ = reported_position;
+                    }
                     last_alarm_ = zx_->read_alarm();
                     std::string reason;
                     if (!zx_alarm_allowed(last_alarm_, reason)) {
                         moving_ = false;
+                        contact_ = false;
                         enabled_ = false;
                         disable_hardware();
                         RCLCPP_ERROR(get_logger(), "%s", reason.c_str());
                         state = "ALARM_STOP";
                     } else if (zx_->torque_reached()) {
                         moving_ = false;
+                        contact_ = true;
                         state = "TORQUE_REACHED";
                     } else if (zx_->position_reached()) {
                         moving_ = false;
+                        contact_ = false;
                         state = "POSITION_REACHED";
                     } else {
                         state = "MOVING";
@@ -344,6 +376,14 @@ private:
         joint_state.position = {static_cast<double>(current_position_)};
         state_pub_->publish(joint_state);
 
+        std_msgs::msg::Bool feedback_valid;
+        feedback_valid.data = feedback_position_valid_;
+        feedback_valid_pub_->publish(feedback_valid);
+
+        std_msgs::msg::Bool contact;
+        contact.data = contact_;
+        contact_pub_->publish(contact);
+
         std_msgs::msg::String status;
         std::ostringstream stream;
         stream
@@ -354,6 +394,12 @@ private:
             << ";moving=" << moving_
             << ";requested_open=" << requested_open_
             << ";position=" << current_position_
+            << ";position_source="
+            << (feedback_position_valid_
+                    ? "measured"
+                    : "commanded_endpoint_estimate")
+            << ";feedback_position_valid=" << feedback_position_valid_
+            << ";contact=" << contact_
             << ";alarm=" << last_alarm_;
         status.data = stream.str();
         status_pub_->publish(status);
@@ -378,6 +424,8 @@ private:
     bool moving_{false};
     bool has_requested_state_{false};
     bool requested_open_{false};
+    bool feedback_position_valid_{false};
+    bool contact_{false};
     int target_position_{0};
     int current_position_{0};
     std::chrono::steady_clock::time_point movement_started_{};
@@ -388,6 +436,9 @@ private:
     rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr stop_sub_;
     rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr state_pub_;
     rclcpp::Publisher<std_msgs::msg::String>::SharedPtr status_pub_;
+    rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr feedback_valid_pub_;
+    rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr contact_pub_;
+    rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr executed_command_pub_;
     rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr enable_service_;
     rclcpp::TimerBase::SharedPtr poll_timer_;
 };
