@@ -776,17 +776,29 @@ private:
         RobotStatus robot_status{};
         const errno_t status_result = robot_.get_robot_status(&robot_status);
         if (status_result != ERR_SUCC) {
-            feedback_valid_ = false;
-            RCLCPP_ERROR_THROTTLE(
+            ++consecutive_feedback_failures_;
+            const double feedback_age = std::chrono::duration<double>(
+                std::chrono::steady_clock::now() -
+                last_feedback_received_).count();
+            RCLCPP_WARN_THROTTLE(
                 get_logger(),
                 *get_clock(),
                 1000,
-                "Robot-status read failed, error=%d",
-                status_result);
-            disarm_locked("actual joint-state feedback was lost");
-            connected_ = false;
+                "Robot-status read failed, error=%d, consecutive=%llu, "
+                "last_valid_age=%.3fs (timeout=%.3fs)",
+                status_result,
+                static_cast<unsigned long long>(
+                    consecutive_feedback_failures_),
+                feedback_age,
+                feedback_timeout_seconds_);
+            if (!feedback_valid_ || feedback_age > feedback_timeout_seconds_) {
+                feedback_valid_ = false;
+                disarm_locked("actual joint-state feedback timeout");
+                connected_ = false;
+            }
             return;
         }
+        consecutive_feedback_failures_ = 0;
 
         std::array<double, kJointCount> actual{};
         for (std::size_t index = 0; index < kJointCount; ++index) {
@@ -1028,6 +1040,7 @@ private:
     std::chrono::steady_clock::time_point last_control_callback_{};
     std::chrono::steady_clock::time_point last_feedback_received_{};
     std::uint64_t control_tick_count_{0};
+    std::uint64_t consecutive_feedback_failures_{0};
     std::uint64_t control_deadline_misses_{0};
     double last_control_period_seconds_{0.0};
     double max_control_period_seconds_{0.0};

@@ -32,7 +32,7 @@ udp_leader_bridge:
     packet_timeout_seconds: 3.0
 
     # Actual robot feedback remains independently guarded at 300 ms.
-    follower_state_timeout_seconds: 0.30
+    follower_state_timeout_seconds: 0.80
 
     joint_signs: [1.0, 1.0, 1.0, 1.0, 1.0, -1.0, 1.0]
     scale_rad_per_pulse: [0.00235619449, 0.00235619449, 0.00235619449, 0.00235619449, 0.00235619449, 0.00235619449, 0.00235619449]
