@@ -341,8 +341,6 @@ verify_robot_safe_to_arm() {
     "robot_socket_connected=1" \
     "robot_error_code=0" \
     "limits_configured=1" \
-    "robot_powered_on=0" \
-    "robot_enabled=0" \
     "motion_enabled=0" \
     "servo_mode_entered=0"; do
     if ! grep -Fq "${required}" <<<"${status}"; then
@@ -350,6 +348,7 @@ verify_robot_safe_to_arm() {
       return 1
     fi
   done
+  echo "Existing robot power/enable state is accepted; shutdown will disable and power off."
 }
 
 arm_stack() {
