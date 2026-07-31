@@ -6,6 +6,8 @@ set -Eeo pipefail
 VENV="${ONE_ARM_LEROBOT_VENV:-/home/tele/.venvs/onearm-lerobot}"
 ROS_SETUP="/opt/ros/${ROS_DISTRO:-jazzy}/setup.bash"
 LEROBOT_VERSION="${ONE_ARM_LEROBOT_VERSION:-0.6.0}"
+TORCH_VERSION="${ONE_ARM_TORCH_VERSION:-2.7.1}"
+TORCHVISION_VERSION="${ONE_ARM_TORCHVISION_VERSION:-0.22.1}"
 
 [[ -r "${ROS_SETUP}" ]] || {
   echo "ERROR: ROS setup is missing: ${ROS_SETUP}" >&2
@@ -18,6 +20,10 @@ if [[ ! -x "${VENV}/bin/python" ]]; then
   python3 -m venv --system-site-packages "${VENV}"
 fi
 "${VENV}/bin/python" -m pip install --upgrade pip
+"${VENV}/bin/python" -m pip install \
+  --index-url https://download.pytorch.org/whl/cpu \
+  "torch==${TORCH_VERSION}+cpu" \
+  "torchvision==${TORCHVISION_VERSION}+cpu"
 "${VENV}/bin/python" -m pip install "lerobot[dataset]==${LEROBOT_VERSION}"
 "${VENV}/bin/python" - <<'PY'
 import cv2
