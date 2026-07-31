@@ -12,7 +12,12 @@ ORBBEC_SETUP="${ONE_ARM_ORBBEC_SETUP:-/home/tele/ros2_ws/install/setup.bash}"
 WORKSPACE_SETUP="${PROJECT_ROOT}/install/setup.bash"
 LEROBOT_PYTHON="${ONE_ARM_LEROBOT_PYTHON:-/home/tele/.venvs/onearm-lerobot/bin/python}"
 SSD_MOUNT="${ONE_ARM_DATASET_SSD_MOUNT:-/media/tele/f05c1455-ef49-4879-9332-d6cf5c5557c4}"
-DATA_ROOT="${SSD_MOUNT}/onearm_Tele"
+DATA_ROOT_OVERRIDE="${ONE_ARM_DATASET_DATA_ROOT:-}"
+if [[ -n "${DATA_ROOT_OVERRIDE}" ]]; then
+  DATA_ROOT="${DATA_ROOT_OVERRIDE%/}"
+else
+  DATA_ROOT="${SSD_MOUNT}/onearm_Tele"
+fi
 RAW_ROOT="${DATA_ROOT}/raw_episodes"
 LEROBOT_ROOT="${DATA_ROOT}/lerobot_dataset"
 RUNTIME_DIR="/tmp/one_arm_dataset_${UID}"
@@ -127,35 +132,43 @@ PY
 }
 
 preflight_storage() {
-  local source options available_blocks block_size available_bytes
-  [[ -d "${SSD_MOUNT}" ]] || {
-    echo "ERROR: SSD mount directory is absent: ${SSD_MOUNT}" >&2
-    return 8
-  }
-  source="$(findmnt -rn -T "${SSD_MOUNT}" -o SOURCE)"
-  options="$(findmnt -rn -T "${SSD_MOUNT}" -o OPTIONS)"
+  local check_path source options available_blocks block_size available_bytes
+  if [[ -n "${DATA_ROOT_OVERRIDE}" ]]; then
+    mkdir -p "${DATA_ROOT}"
+    check_path="${DATA_ROOT}"
+  else
+    [[ -d "${SSD_MOUNT}" ]] || {
+      echo "ERROR: SSD mount directory is absent: ${SSD_MOUNT}" >&2
+      return 8
+    }
+    check_path="${SSD_MOUNT}"
+  fi
+  source="$(findmnt -rn -T "${check_path}" -o SOURCE)"
+  options="$(findmnt -rn -T "${check_path}" -o OPTIONS)"
   [[ -n "${source}" ]] || {
-    echo "ERROR: ${SSD_MOUNT} is not a mounted filesystem." >&2
+    echo "ERROR: ${check_path} is not on a mounted filesystem." >&2
     return 8
   }
   if ! grep -Eq '(^|,)rw(,|$)' <<<"${options}"; then
-    echo "ERROR: dataset SSD is not mounted read/write: ${options}" >&2
+    echo "ERROR: dataset filesystem is not mounted read/write: ${options}" >&2
     return 8
   fi
-  [[ -w "${SSD_MOUNT}" ]] || {
-    echo "ERROR: user ${USER} cannot write the SSD mount." >&2
+  [[ -w "${check_path}" ]] || {
+    echo "ERROR: user ${USER} cannot write the dataset path: ${check_path}" >&2
     return 8
   }
-  available_blocks="$(stat -f -c '%a' "${SSD_MOUNT}")"
-  block_size="$(stat -f -c '%S' "${SSD_MOUNT}")"
+  available_blocks="$(stat -f -c '%a' "${check_path}")"
+  block_size="$(stat -f -c '%S' "${check_path}")"
   available_bytes=$((available_blocks * block_size))
-  echo "Dataset SSD: source=${source} mount=${SSD_MOUNT}"
+  echo "Dataset storage: source=${source} check_path=${check_path}"
+  echo "DATA_ROOT=${DATA_ROOT}"
   echo "Available to ${USER}: $(format_bytes "${available_bytes}")"
   if (( available_bytes < MINIMUM_FREE_BYTES )); then
     echo "ERROR: less than $(format_bytes "${MINIMUM_FREE_BYTES}") is available to the recorder." >&2
     echo "The filesystem may still have root-reserved ext4 blocks; df free space alone is insufficient." >&2
     return 8
   fi
+  mkdir -p "${RAW_ROOT}" "${LEROBOT_ROOT}"
 }
 
 preflight_cameras() {

@@ -4,6 +4,10 @@ param(
     [string]$UbuntuHost = "armstrong-host",
     [string]$UbuntuProject = "/home/tele/onearm_teleop/One-Arm-Teleoperation",
     [string]$UbuntuUdpTarget = "192.168.0.36:5005",
+    [string]$UbuntuRosDistro = "",
+    [string]$UbuntuOrbbecSetup = "",
+    [string]$UbuntuLerobotPython = "",
+    [string]$UbuntuDatasetDataRoot = "",
     [ValidateRange(1.0, 100.0)]
     [double]$RateHz = 100.0,
     [string]$SessionName = "full_teleop",
@@ -58,7 +62,7 @@ function Stop-RemoteStack {
         -o BatchMode=yes `
         -o ConnectTimeout=8 `
         $UbuntuHost `
-        "cd '$UbuntuProject' && bash tools/ubuntu_full_teleop_stack.sh stop"
+        "cd $remoteProject && ${remoteEnvironment}bash tools/ubuntu_full_teleop_stack.sh stop"
     if ($LASTEXITCODE -ne 0) {
         Write-Warning "Ubuntu did not fully confirm shutdown. Press the physical emergency stop and inspect the Ubuntu logs."
     }
@@ -75,7 +79,7 @@ function Stop-DatasetCapture {
         -o BatchMode=yes `
         -o ConnectTimeout=8 `
         $UbuntuHost `
-        "cd '$UbuntuProject' && bash tools/ubuntu_dataset_episode.sh stop"
+        "cd $remoteProject && ${remoteEnvironment}bash tools/ubuntu_dataset_episode.sh stop"
     if ($LASTEXITCODE -ne 0) {
         Write-Warning (
             "Ubuntu did not fully confirm dataset capture shutdown. " +
@@ -88,6 +92,39 @@ function Stop-DatasetCapture {
 function ConvertTo-Utf8Base64 {
     param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
     return [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Value))
+}
+
+function ConvertTo-BashSingleQuoted {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
+
+    if ($Value.Contains("'")) {
+        throw "Remote shell values may not contain single quotes: $Value"
+    }
+    return "'" + $Value + "'"
+}
+
+function Get-RemoteEnvironmentPrefix {
+    $pairs = [ordered]@{}
+    if (-not [string]::IsNullOrWhiteSpace($UbuntuRosDistro)) {
+        $pairs["ROS_DISTRO"] = $UbuntuRosDistro
+    }
+    if (-not [string]::IsNullOrWhiteSpace($UbuntuOrbbecSetup)) {
+        $pairs["ONE_ARM_ORBBEC_SETUP"] = $UbuntuOrbbecSetup
+    }
+    if (-not [string]::IsNullOrWhiteSpace($UbuntuLerobotPython)) {
+        $pairs["ONE_ARM_LEROBOT_PYTHON"] = $UbuntuLerobotPython
+    }
+    if (-not [string]::IsNullOrWhiteSpace($UbuntuDatasetDataRoot)) {
+        $pairs["ONE_ARM_DATASET_DATA_ROOT"] = $UbuntuDatasetDataRoot
+    }
+    if ($pairs.Count -eq 0) {
+        return ""
+    }
+
+    $assignments = foreach ($key in $pairs.Keys) {
+        $key + "=" + (ConvertTo-BashSingleQuoted -Value $pairs[$key])
+    }
+    return ($assignments -join " ") + " "
 }
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
@@ -118,6 +155,8 @@ if ($DatasetRepoId -notmatch "^[^/\s]+/[^/\s]+$") {
 }
 $taskBase64 = ConvertTo-Utf8Base64 -Value $Task
 $operatorBase64 = ConvertTo-Utf8Base64 -Value $Operator
+$remoteProject = ConvertTo-BashSingleQuoted -Value $UbuntuProject
+$remoteEnvironment = Get-RemoteEnvironmentPrefix
 $script:ReadyFile = Join-Path `
     ([System.IO.Path]::GetTempPath()) `
     ("one_arm_teleop_ready_{0}.flag" -f $PID)
@@ -129,9 +168,13 @@ Write-Host "============================================================"
 Write-Host "One-Arm Teleoperation / PowerShell launcher"
 Write-Host "Windows source IP : $windowsSourceIp"
 Write-Host "Ubuntu SSH target : $UbuntuHost"
+Write-Host "Ubuntu project    : $UbuntuProject"
 Write-Host "ZLink2 port       : $ComPort"
 Write-Host "Task              : $Task"
 Write-Host "Dataset repo id   : $DatasetRepoId"
+if (-not [string]::IsNullOrWhiteSpace($UbuntuDatasetDataRoot)) {
+    Write-Host "Dataset root      : $UbuntuDatasetDataRoot"
+}
 Write-Host "============================================================"
 Write-Host "Stage 0 starts only the head/right-wrist RGB cameras and checks 30 FPS."
 Write-Host "The two chest cameras are excluded. The robot will NOT move."
@@ -141,7 +184,7 @@ try {
     # when startup stopped at the SSD/camera preflight.
     $script:DatasetCaptureStarted = $true
     Invoke-CheckedSsh `
-        "cd '$UbuntuProject' && bash tools/ubuntu_dataset_episode.sh start"
+        "cd $remoteProject && ${remoteEnvironment}bash tools/ubuntu_dataset_episode.sh start"
 
     Write-Host ""
     Write-Host "Stage 1 starts ROS 2 robot interfaces only. The robot will NOT move."
@@ -149,13 +192,13 @@ try {
     # If SSH drops after creating any PID file, finally will still issue stop.
     $script:RemoteStackStarted = $true
     Invoke-CheckedSsh `
-        "cd '$UbuntuProject' && bash tools/ubuntu_full_teleop_stack.sh start '$windowsSourceIp'"
+        "cd $remoteProject && ${remoteEnvironment}bash tools/ubuntu_full_teleop_stack.sh start '$windowsSourceIp'"
 
     Write-Host ""
-    Write-Host "Starting passive ROS bag recording on the SSD..."
+    Write-Host "Starting passive ROS bag recording..."
     $script:EpisodeRecordingStarted = $true
     Invoke-CheckedSsh `
-        "cd '$UbuntuProject' && bash tools/ubuntu_dataset_episode.sh record-start '$SessionName' '$taskBase64' '$operatorBase64'"
+        "cd $remoteProject && ${remoteEnvironment}bash tools/ubuntu_dataset_episode.sh record-start '$SessionName' '$taskBase64' '$operatorBase64'"
 
     $arguments = @(
         "--port", $ComPort,
@@ -205,7 +248,7 @@ exit $LASTEXITCODE
     Write-Host "After these checks, the robot WILL be powered, enabled, and put in servo mode,"
     Write-Host "but it still receives no motion target until you press Space."
     Invoke-CheckedSsh `
-        "cd '$UbuntuProject' && bash tools/ubuntu_full_teleop_stack.sh arm"
+        "cd $remoteProject && ${remoteEnvironment}bash tools/ubuntu_full_teleop_stack.sh arm"
 
     Set-Content `
         -LiteralPath $script:ReadyFile `
@@ -269,7 +312,7 @@ if ($script:EpisodeRecordingStarted) {
     }
     try {
         Invoke-CheckedSsh `
-            "cd '$UbuntuProject' && bash tools/ubuntu_dataset_episode.sh finalize '$outcome' '$DatasetRepoId'"
+            "cd $remoteProject && ${remoteEnvironment}bash tools/ubuntu_dataset_episode.sh finalize '$outcome' '$DatasetRepoId'"
     }
     catch {
         $script:LaunchFailed = $true
