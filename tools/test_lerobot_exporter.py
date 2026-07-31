@@ -10,6 +10,7 @@ sys.path.insert(0, str(TOOLS_DIR))
 
 from export_rosbag_to_lerobot import (
     _feature_schema,
+    _schema_matches,
     nearest_sample,
     previous_sample,
     uniform_grid_ns,
@@ -64,6 +65,28 @@ class FeatureSchemaTests(unittest.TestCase):
             features["observation.images.wrist_right"]["names"],
             ["height", "width", "channels"],
         )
+
+    def test_schema_allows_lerobot_generated_bookkeeping_features(self) -> None:
+        expected = _feature_schema((720, 1280, 3), (720, 1280, 3))
+        current = dict(expected)
+        current["timestamp"] = {
+            "dtype": "float32",
+            "shape": (1,),
+            "names": None,
+        }
+        current["episode_index"] = {
+            "dtype": "int64",
+            "shape": (1,),
+            "names": None,
+        }
+        self.assertTrue(_schema_matches(current, expected))
+
+    def test_schema_still_rejects_changed_user_feature(self) -> None:
+        expected = _feature_schema((720, 1280, 3), (720, 1280, 3))
+        current = dict(expected)
+        current["action"] = dict(current["action"])
+        current["action"]["shape"] = (7,)
+        self.assertFalse(_schema_matches(current, expected))
 
 
 if __name__ == "__main__":

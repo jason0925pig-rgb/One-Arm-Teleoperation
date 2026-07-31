@@ -323,7 +323,11 @@ def _schema_matches(
     current: dict[str, dict[str, Any]],
     expected: dict[str, dict[str, Any]],
 ) -> bool:
-    if set(current) != set(expected):
+    # LeRobot adds bookkeeping features such as timestamp, frame_index,
+    # episode_index, index and task_index when a dataset is created.  Those
+    # generated fields are absent from our user feature declaration and must
+    # not make every subsequent episode fail schema validation.
+    if not set(expected).issubset(current):
         return False
     for key, value in expected.items():
         other = current[key]
