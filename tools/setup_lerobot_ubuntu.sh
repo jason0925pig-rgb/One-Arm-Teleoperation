@@ -18,7 +18,7 @@ if [[ ! -x "${VENV}/bin/python" ]]; then
   python3 -m venv --system-site-packages "${VENV}"
 fi
 "${VENV}/bin/python" -m pip install --upgrade pip
-"${VENV}/bin/python" -m pip install "lerobot==${LEROBOT_VERSION}"
+"${VENV}/bin/python" -m pip install "lerobot[dataset]==${LEROBOT_VERSION}"
 "${VENV}/bin/python" - <<'PY'
 import cv2
 import lerobot
