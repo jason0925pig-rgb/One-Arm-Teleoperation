@@ -28,13 +28,24 @@ fi
 "${VENV}/bin/python" -m pip install \
   --index-url "${PYPI_INDEX}" \
   "lerobot[dataset]==${LEROBOT_VERSION}"
+"${VENV}/bin/python" -m pip install \
+  --index-url "${PYPI_INDEX}" \
+  "pandas>=2.2,<3" \
+  "scipy>=1.13,<2" \
+  "setuptools>=71,<80"
 "${VENV}/bin/python" - <<'PY'
 import cv2
 import lerobot
+import pandas
 import pyarrow
 import rclpy
 import rosbag2_py
+from lerobot.datasets import LeRobotDataset
 
-print(f"LeRobot environment ready: {lerobot.__version__}")
+print(
+    "LeRobot environment ready: "
+    f"lerobot={lerobot.__version__} pandas={pandas.__version__} "
+    f"pyarrow={pyarrow.__version__} dataset={LeRobotDataset.__name__}"
+)
 PY
 echo "LEROBOT_VENV_READY=${VENV}"
