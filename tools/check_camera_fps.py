@@ -60,10 +60,12 @@ def summarize(samples: Samples) -> dict[str, float | int]:
             "median_period_ms": float("inf"),
             "maximum_gap_ms": float("inf"),
         }
+    # Adjacent-pair iteration intentionally compares N samples with N-1
+    # successors. strict=True would reject the correct shape here.
     header_deltas = [
         (current - previous) / 1_000_000_000
         for previous, current in zip(
-            samples.header_ns, samples.header_ns[1:], strict=True
+            samples.header_ns, samples.header_ns[1:]
         )
         if current > previous
     ]
