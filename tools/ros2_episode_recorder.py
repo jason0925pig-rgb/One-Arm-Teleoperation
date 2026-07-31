@@ -26,7 +26,9 @@ DEFAULT_TOPICS = (
     "/teleop/bridge_status",
     "/teleop/enabled",
     "/teleop/stop_request",
-    "/right_arm/teleop_joint_command",
+    # Do not subscribe to /right_arm/teleop_joint_command here: the bridge
+    # uses its subscriber count as a motion-safety check. The dataset action is
+    # the command actually accepted by the servo node below.
     "/right_arm/executed_joint_command",
     "/right_arm/joint_states",
     "/right_arm/safety_status",
