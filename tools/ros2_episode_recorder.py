@@ -52,6 +52,7 @@ DEFAULT_CAMERA_TOPICS = (
 )
 ROSBAG_GRACEFUL_STOP_TIMEOUT_SECONDS = 120.0
 ROSBAG_TERMINATE_TIMEOUT_SECONDS = 10.0
+ROSBAG_START_TIMEOUT_SECONDS = 20.0
 LEROBOT_REQUIRED_TOPICS = (
     "/right_arm/executed_joint_command",
     "/right_arm/joint_states",
@@ -380,6 +381,41 @@ def main() -> int:
         metadata["error"] = f"{type(exc).__name__}: {exc}"
         write_metadata(metadata_path, metadata)
         print(f"ERROR: failed to start rosbag: {exc}", file=sys.stderr)
+        return 4
+
+    storage_suffix = ".db3" if args.storage == "sqlite3" else ".mcap"
+    startup_deadline = time.monotonic() + ROSBAG_START_TIMEOUT_SECONDS
+    while (
+        process.poll() is None
+        and not any(bag_dir.glob(f"*{storage_suffix}"))
+        and time.monotonic() < startup_deadline
+        and pending_stop_signal is None
+    ):
+        time.sleep(0.05)
+    if process.poll() is not None or not any(
+        bag_dir.glob(f"*{storage_suffix}")
+    ):
+        if process.poll() is None:
+            signal_process_group(process, signal.SIGINT)
+            try:
+                process.wait(timeout=ROSBAG_TERMINATE_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                signal_process_group(process, signal.SIGKILL)
+                process.wait()
+        metadata["status"] = "error"
+        metadata["ended_utc"] = utc_now()
+        metadata["duration_seconds"] = time.monotonic() - started
+        metadata["stop_reason"] = (
+            "stop_during_rosbag_startup"
+            if pending_stop_signal is not None
+            else "rosbag_startup_timeout_or_exit"
+        )
+        metadata["rosbag_return_code"] = process.returncode
+        write_metadata(metadata_path, metadata)
+        print(
+            "ERROR: rosbag did not create its storage file during startup",
+            file=sys.stderr,
+        )
         return 4
     if args.episode_path_file is not None:
         state_path = args.episode_path_file.expanduser().resolve()
