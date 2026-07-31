@@ -11,13 +11,9 @@ ROS_SETUP="/opt/ros/${ROS_DISTRO_NAME}/setup.bash"
 ORBBEC_SETUP="${ONE_ARM_ORBBEC_SETUP:-/home/tele/ros2_ws/install/setup.bash}"
 WORKSPACE_SETUP="${PROJECT_ROOT}/install/setup.bash"
 LEROBOT_PYTHON="${ONE_ARM_LEROBOT_PYTHON:-/home/tele/.venvs/onearm-lerobot/bin/python}"
-SSD_MOUNT="${ONE_ARM_DATASET_SSD_MOUNT:-/media/tele/f05c1455-ef49-4879-9332-d6cf5c5557c4}"
-DATA_ROOT_OVERRIDE="${ONE_ARM_DATASET_DATA_ROOT:-}"
-if [[ -n "${DATA_ROOT_OVERRIDE}" ]]; then
-  DATA_ROOT="${DATA_ROOT_OVERRIDE%/}"
-else
-  DATA_ROOT="${SSD_MOUNT}/onearm_Tele"
-fi
+DEFAULT_DATA_ROOT="${PROJECT_ROOT}/datasets/onearm_Tele"
+DATA_ROOT="${ONE_ARM_DATASET_DATA_ROOT:-${DEFAULT_DATA_ROOT}}"
+DATA_ROOT="${DATA_ROOT%/}"
 RAW_ROOT="${DATA_ROOT}/raw_episodes"
 LEROBOT_ROOT="${DATA_ROOT}/lerobot_dataset"
 RUNTIME_DIR="/tmp/one_arm_dataset_${UID}"
@@ -133,16 +129,8 @@ PY
 
 preflight_storage() {
   local check_path source options available_blocks block_size available_bytes
-  if [[ -n "${DATA_ROOT_OVERRIDE}" ]]; then
-    mkdir -p "${DATA_ROOT}"
-    check_path="${DATA_ROOT}"
-  else
-    [[ -d "${SSD_MOUNT}" ]] || {
-      echo "ERROR: SSD mount directory is absent: ${SSD_MOUNT}" >&2
-      return 8
-    }
-    check_path="${SSD_MOUNT}"
-  fi
+  mkdir -p "${DATA_ROOT}"
+  check_path="${DATA_ROOT}"
   source="$(findmnt -rn -T "${check_path}" -o SOURCE)"
   options="$(findmnt -rn -T "${check_path}" -o OPTIONS)"
   [[ -n "${source}" ]] || {
@@ -172,14 +160,29 @@ preflight_storage() {
 }
 
 preflight_cameras() {
-  local serial
+  local serial missing_serials=() orbbec_count
   ros2 pkg prefix orbbec_camera >/dev/null
   for serial in "${HEAD_SERIAL}" "${WRIST_SERIAL}"; do
     if ! compgen -G "/dev/v4l/by-id/*${serial}*" >/dev/null; then
-      echo "ERROR: required Orbbec serial is absent: ${serial}" >&2
-      return 9
+      missing_serials+=("${serial}")
     fi
   done
+  if ((${#missing_serials[@]} == 0)); then
+    return 0
+  fi
+
+  orbbec_count="$(
+    lsusb 2>/dev/null | grep -Eci 'Orbbec|2bc5:0807|Gemini 336L' || true
+  )"
+  if [[ "${orbbec_count}" =~ ^[0-9]+$ ]] && ((orbbec_count >= 2)); then
+    echo "WARNING: /dev/v4l/by-id is missing serial link(s): ${missing_serials[*]}" >&2
+    echo "WARNING: ${orbbec_count} Orbbec USB device(s) are visible; launch will validate the configured serial numbers." >&2
+    return 0
+  fi
+
+  echo "ERROR: required Orbbec serial link(s) are absent: ${missing_serials[*]}" >&2
+  echo "ERROR: visible Orbbec USB device count is ${orbbec_count:-0}, expected at least 2." >&2
+  return 9
 }
 
 preflight_python() {
