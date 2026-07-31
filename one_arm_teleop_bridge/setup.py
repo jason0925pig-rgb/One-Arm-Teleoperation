@@ -23,7 +23,6 @@ setup(
     entry_points={
         "console_scripts": [
             "udp_leader_bridge = one_arm_teleop_bridge.udp_leader_bridge:main",
-            "usb_camera_publisher = one_arm_teleop_bridge.usb_camera_publisher:main",
         ],
     },
 )

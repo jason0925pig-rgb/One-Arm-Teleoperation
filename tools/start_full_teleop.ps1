@@ -6,7 +6,10 @@ param(
     [string]$UbuntuUdpTarget = "192.168.0.36:5005",
     [ValidateRange(1.0, 100.0)]
     [double]$RateHz = 100.0,
-    [string]$SessionName = "full_teleop"
+    [string]$SessionName = "full_teleop",
+    [string]$Task = "",
+    [string]$Operator = "Lucky",
+    [string]$DatasetRepoId = "local/onearm_tele"
 )
 
 $ErrorActionPreference = "Stop"
@@ -15,6 +18,8 @@ $script:SenderProcess = $null
 $script:ReadyFile = $null
 $script:NormalSenderExit = $false
 $script:LaunchFailed = $false
+$script:DatasetCaptureStarted = $false
+$script:EpisodeRecordingStarted = $false
 
 function Invoke-CheckedSsh {
     param([Parameter(Mandatory = $true)][string]$RemoteCommand)
@@ -60,6 +65,31 @@ function Stop-RemoteStack {
     $script:RemoteStackStarted = $false
 }
 
+function Stop-DatasetCapture {
+    if (-not $script:DatasetCaptureStarted) {
+        return
+    }
+    Write-Host ""
+    Write-Host "Stopping passive episode recorder and the two dataset cameras..."
+    & ssh.exe `
+        -o BatchMode=yes `
+        -o ConnectTimeout=8 `
+        $UbuntuHost `
+        "cd '$UbuntuProject' && bash tools/ubuntu_dataset_episode.sh stop"
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning (
+            "Ubuntu did not fully confirm dataset capture shutdown. " +
+            "Inspect tools/ubuntu_dataset_episode.sh status."
+        )
+    }
+    $script:DatasetCaptureStarted = $false
+}
+
+function ConvertTo-Utf8Base64 {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
+    return [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Value))
+}
+
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $recorder = Join-Path $PSScriptRoot "run_zlink2_recorder.cmd"
 if (-not (Test-Path -LiteralPath $recorder -PathType Leaf)) {
@@ -71,6 +101,23 @@ if ($targetParts.Count -ne 2) {
     throw "UbuntuUdpTarget must be HOST:PORT."
 }
 $windowsSourceIp = Get-UdpSourceAddress -Target $UbuntuUdpTarget
+if ([string]::IsNullOrEmpty($Task)) {
+    $Task = Read-Host "Task prompt (exact text stored in LeRobot)"
+}
+if ([string]::IsNullOrWhiteSpace($Task)) {
+    throw "Task prompt must not be empty."
+}
+if ($Task -ne $Task.Trim()) {
+    throw "Task prompt must not contain leading or trailing whitespace."
+}
+if ($SessionName -notmatch "^[A-Za-z0-9_-]+$") {
+    throw "SessionName may contain only A-Z, a-z, 0-9, _ or -."
+}
+if ($DatasetRepoId -notmatch "^[^/\s]+/[^/\s]+$") {
+    throw "DatasetRepoId must have owner/name form."
+}
+$taskBase64 = ConvertTo-Utf8Base64 -Value $Task
+$operatorBase64 = ConvertTo-Utf8Base64 -Value $Operator
 $script:ReadyFile = Join-Path `
     ([System.IO.Path]::GetTempPath()) `
     ("one_arm_teleop_ready_{0}.flag" -f $PID)
@@ -83,15 +130,32 @@ Write-Host "One-Arm Teleoperation / PowerShell launcher"
 Write-Host "Windows source IP : $windowsSourceIp"
 Write-Host "Ubuntu SSH target : $UbuntuHost"
 Write-Host "ZLink2 port       : $ComPort"
+Write-Host "Task              : $Task"
+Write-Host "Dataset repo id   : $DatasetRepoId"
 Write-Host "============================================================"
-Write-Host "Stage 1 starts ROS 2 processes only. The robot will NOT move."
+Write-Host "Stage 0 starts only the head/right-wrist RGB cameras and checks 30 FPS."
+Write-Host "The two chest cameras are excluded. The robot will NOT move."
 
 try {
+    # Treat the result as uncertain until SSH finishes. Cleanup is safe even
+    # when startup stopped at the SSD/camera preflight.
+    $script:DatasetCaptureStarted = $true
+    Invoke-CheckedSsh `
+        "cd '$UbuntuProject' && bash tools/ubuntu_dataset_episode.sh start"
+
+    Write-Host ""
+    Write-Host "Stage 1 starts ROS 2 robot interfaces only. The robot will NOT move."
     # Treat the result as uncertain until the remote start command finishes.
     # If SSH drops after creating any PID file, finally will still issue stop.
     $script:RemoteStackStarted = $true
     Invoke-CheckedSsh `
         "cd '$UbuntuProject' && bash tools/ubuntu_full_teleop_stack.sh start '$windowsSourceIp'"
+
+    Write-Host ""
+    Write-Host "Starting passive ROS bag recording on the SSD..."
+    $script:EpisodeRecordingStarted = $true
+    Invoke-CheckedSsh `
+        "cd '$UbuntuProject' && bash tools/ubuntu_dataset_episode.sh record-start '$SessionName' '$taskBase64' '$operatorBase64'"
 
     $arguments = @(
         "--port", $ComPort,
@@ -173,8 +237,47 @@ finally {
         & taskkill.exe /PID $script:SenderProcess.Id /T /F 2>$null | Out-Null
     }
     Stop-RemoteStack
+    Stop-DatasetCapture
     if ($null -ne $script:ReadyFile -and (Test-Path -LiteralPath $script:ReadyFile)) {
         Remove-Item -LiteralPath $script:ReadyFile -Force
+    }
+}
+
+if ($script:EpisodeRecordingStarted) {
+    $outcome = "failure"
+    if ($script:NormalSenderExit -and -not $script:LaunchFailed) {
+        while ($true) {
+            $answer = (
+                Read-Host "Episode outcome: S=success, F=failure"
+            ).Trim().ToLowerInvariant()
+            if ($answer -in @("s", "success")) {
+                $outcome = "success"
+                break
+            }
+            if ($answer -in @("f", "failure")) {
+                $outcome = "failure"
+                break
+            }
+            Write-Host "Please enter S or F."
+        }
+    }
+    else {
+        Write-Host (
+            "The session did not end normally; it will be marked failure " +
+            "and kept only as a raw diagnostic episode."
+        )
+    }
+    try {
+        Invoke-CheckedSsh `
+            "cd '$UbuntuProject' && bash tools/ubuntu_dataset_episode.sh finalize '$outcome' '$DatasetRepoId'"
+    }
+    catch {
+        $script:LaunchFailed = $true
+        Write-Host ""
+        Write-Host (
+            "DATASET FINALIZATION ERROR: " + $_.Exception.Message
+        ) -ForegroundColor Red
+        Write-Host "The raw ROS bag was preserved and can be exported later."
     }
 }
 
@@ -182,4 +285,4 @@ if ($script:LaunchFailed -or -not $script:NormalSenderExit) {
     exit 1
 }
 Write-Host ""
-Write-Host "Teleoperation session ended and the Ubuntu shutdown sequence was requested."
+Write-Host "Teleoperation ended; robot shutdown and dataset capture stop were confirmed."

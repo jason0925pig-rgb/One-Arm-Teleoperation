@@ -24,8 +24,8 @@ DEFAULT_GRIPPER_FEEDBACK_VALID_TOPIC = (
     "/right_arm/gripper_feedback_valid"
 )
 DEFAULT_GRIPPER_CONTACT_TOPIC = "/right_arm/gripper_contact"
-DEFAULT_HEAD_TOPIC = "/cameras/head/image_raw/compressed"
-DEFAULT_WRIST_TOPIC = "/cameras/wrist/image_raw/compressed"
+DEFAULT_HEAD_TOPIC = "/camera_head/color/image_raw/compressed"
+DEFAULT_WRIST_TOPIC = "/camera_wrist/color/image_raw/compressed"
 
 
 @dataclass

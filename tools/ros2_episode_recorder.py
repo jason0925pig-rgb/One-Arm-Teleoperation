@@ -40,10 +40,13 @@ DEFAULT_TOPICS = (
     "/right_arm/gripper_feedback_valid",
     "/right_arm/gripper_contact",
 )
-DEFAULT_HEAD_TOPIC = "/cameras/head/image_raw/compressed"
-DEFAULT_WRIST_TOPIC = "/cameras/wrist/image_raw/compressed"
-DEFAULT_HEAD_STATUS_TOPIC = "/cameras/head/status"
-DEFAULT_WRIST_STATUS_TOPIC = "/cameras/wrist/status"
+DEFAULT_HEAD_TOPIC = "/camera_head/color/image_raw/compressed"
+DEFAULT_WRIST_TOPIC = "/camera_wrist/color/image_raw/compressed"
+DEFAULT_CAMERA_TOPICS = (
+    "/camera_head/color/camera_info",
+    "/camera_wrist/color/camera_info",
+    "/diagnostics",
+)
 LEROBOT_REQUIRED_TOPICS = (
     "/right_arm/executed_joint_command",
     "/right_arm/joint_states",
@@ -158,6 +161,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--wrist-topic", default=DEFAULT_WRIST_TOPIC)
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument(
+        "--episode-path-file",
+        type=Path,
+        help=(
+            "atomically write the created episode directory here so a "
+            "supervisor can finalize it"
+        ),
+    )
+    parser.add_argument(
         "--extra-topic",
         action="append",
         default=[],
@@ -245,8 +256,7 @@ def main() -> int:
             (
                 *DEFAULT_TOPICS,
                 *camera_topics,
-                DEFAULT_HEAD_STATUS_TOPIC,
-                DEFAULT_WRIST_STATUS_TOPIC,
+                *DEFAULT_CAMERA_TOPICS,
                 *args.extra_topic,
             )
         )
@@ -337,6 +347,12 @@ def main() -> int:
         write_metadata(metadata_path, metadata)
         print(f"ERROR: failed to start rosbag: {exc}", file=sys.stderr)
         return 4
+    if args.episode_path_file is not None:
+        state_path = args.episode_path_file.expanduser().resolve()
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = state_path.with_suffix(state_path.suffix + ".tmp")
+        temporary.write_text(str(episode_dir) + "\n", encoding="utf-8")
+        temporary.replace(state_path)
     try:
         while process.poll() is None:
             if args.duration is not None and time.monotonic() - started >= args.duration:
