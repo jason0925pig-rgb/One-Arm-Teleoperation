@@ -11,9 +11,12 @@ TOOLS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOLS_DIR))
 
 from export_rosbag_to_lerobot import (
+    DEFAULT_ACTION_TOPIC,
+    TimedStream,
     _completed_export_index,
     _feature_schema,
     _schema_matches,
+    _validate_stream_type,
     nearest_sample,
     previous_sample,
     uniform_grid_ns,
@@ -150,6 +153,24 @@ class ExportIdempotencyTests(unittest.TestCase):
                     dataset_root.resolve(),
                     "local/onearm_tele",
                 )
+            )
+
+
+class RequiredStreamTests(unittest.TestCase):
+    def test_empty_executed_action_is_rejected_as_invalid_training_data(
+        self,
+    ) -> None:
+        stream = TimedStream(
+            topic=DEFAULT_ACTION_TOPIC,
+            type_name="sensor_msgs/msg/JointState",
+        )
+        with self.assertRaisesRegex(
+            SystemExit,
+            "contains no executed robot actions",
+        ):
+            _validate_stream_type(
+                stream,
+                {"sensor_msgs/msg/JointState"},
             )
 
 

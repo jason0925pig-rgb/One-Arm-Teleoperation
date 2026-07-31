@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import ipaddress
 import json
 import math
 import re
@@ -91,12 +92,30 @@ def parse_udp_target(value: str) -> tuple[str, int]:
     return host.strip(), port
 
 
+def parse_ipv4_address(value: str) -> str:
+    try:
+        address = ipaddress.ip_address(value.strip())
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            f"invalid IPv4 address: {value!r}"
+        ) from exc
+    if address.version != 4:
+        raise argparse.ArgumentTypeError("only an IPv4 bind address is supported")
+    return str(address)
+
+
 class UdpTeleopSender:
     """Send complete leader frames; this class has no robot-control capability."""
 
-    def __init__(self, target: tuple[str, int]):
+    def __init__(
+        self,
+        target: tuple[str, int],
+        bind_host: str | None = None,
+    ):
         self.target = target
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        if bind_host:
+            self.socket.bind((bind_host, 0))
         self.packets_sent = 0
         self.stop_packets_sent = 0
         self.last_sequence = -1
@@ -574,6 +593,7 @@ def initial_metadata(
                 if args.udp_target is not None
                 else None
             ),
+            "bind_host": args.udp_bind_host,
             "complete_frames_only": True,
             "deadman_enabled": bool(args.deadman),
             "stop_repeat_count": int(args.stop_repeat),
@@ -683,7 +703,11 @@ def record_session(
     )
     write_json_atomic(metadata_path, metadata)
     gripper_machine = gripper_state.GripperStateMachine(gripper_calibration)
-    udp_sender = UdpTeleopSender(args.udp_target) if args.udp_target else None
+    udp_sender = (
+        UdpTeleopSender(args.udp_target, args.udp_bind_host)
+        if args.udp_target
+        else None
+    )
     safety_keyboard = WindowsSafetyKeyboard(
         udp_sender,
         session_dir.name,
@@ -957,6 +981,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--udp-bind-host",
+        type=parse_ipv4_address,
+        help=(
+            "optional local IPv4 source address; binding prevents Windows "
+            "from routing teleoperation packets through the wrong adapter"
+        ),
+    )
+    parser.add_argument(
         "--deadman",
         action="store_true",
         help=(
@@ -1047,6 +1079,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("--stop-interval must be between 0 and 0.20 seconds")
     if args.deadman and args.udp_target is None:
         raise SystemExit("--deadman requires --udp-target")
+    if args.udp_bind_host is not None and args.udp_target is None:
+        raise SystemExit("--udp-bind-host requires --udp-target")
     if args.activation_file is not None and not args.deadman:
         raise SystemExit("--activation-file requires --deadman")
 

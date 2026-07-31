@@ -267,7 +267,16 @@ def _validate_stream_type(
             + " or ".join(sorted(expected))
         )
     if not stream.times_ns:
-        raise ValueError(f"{stream.topic} contains no messages")
+        if stream.topic == DEFAULT_ACTION_TOPIC:
+            raise SystemExit(
+                "LeRobot export refused: "
+                f"{stream.topic} contains no executed robot actions. "
+                "The raw ROS bag is preserved, but this episode is not valid "
+                "training data. Check that FULL_TELEOP_READY remained active "
+                "and that the robot actually moved; target_preview must not "
+                "be substituted for executed actions."
+            )
+        raise SystemExit(f"{stream.topic} contains no messages")
 
 
 def _summarize_skews(values_ns: Sequence[int]) -> dict[str, float]:

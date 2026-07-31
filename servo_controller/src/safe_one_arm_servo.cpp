@@ -51,6 +51,9 @@ public:
             declare_parameter<double>("control_deadline_warning_factor", 1.5);
         control_deadline_abort_seconds_ =
             declare_parameter<double>("control_deadline_abort_seconds", 0.05);
+        control_deadline_abort_consecutive_misses_ =
+            declare_parameter<int>(
+                "control_deadline_abort_consecutive_misses", 2);
         require_single_command_publisher_ =
             declare_parameter<bool>("require_single_command_publisher", true);
         lower_limits_ =
@@ -196,7 +199,8 @@ private:
             !std::isfinite(control_deadline_warning_factor_) ||
             control_deadline_warning_factor_ <= 1.0 ||
             !std::isfinite(control_deadline_abort_seconds_) ||
-            control_deadline_abort_seconds_ <= 0.0) {
+            control_deadline_abort_seconds_ <= 0.0 ||
+            control_deadline_abort_consecutive_misses_ <= 0) {
             return false;
         }
         if (
@@ -594,6 +598,7 @@ private:
         servo_mode_entered_ = true;
         motion_enabled_ = true;
         has_target_ = false;
+        consecutive_control_deadline_aborts_ = 0;
         last_control_tick_ = std::chrono::steady_clock::now();
         response->success = true;
         response->message =
@@ -709,12 +714,29 @@ private:
                 callback_period,
                 expected_period,
                 static_cast<unsigned long long>(control_deadline_misses_));
+        }
+        if (
+            motion_enabled_ &&
+            has_target_ &&
+            callback_period > control_deadline_abort_seconds_) {
+            ++consecutive_control_deadline_aborts_;
+            RCLCPP_ERROR(
+                get_logger(),
+                "Severe control deadline miss %d/%d: actual=%.6fs "
+                "abort_threshold=%.6fs",
+                consecutive_control_deadline_aborts_,
+                control_deadline_abort_consecutive_misses_,
+                callback_period,
+                control_deadline_abort_seconds_);
             if (
-                motion_enabled_ &&
-                callback_period > control_deadline_abort_seconds_) {
-                disarm_locked("control-loop deadline abort threshold exceeded");
+                consecutive_control_deadline_aborts_ >=
+                control_deadline_abort_consecutive_misses_) {
+                disarm_locked(
+                    "consecutive severe control-loop deadline misses");
                 return;
             }
+        } else {
+            consecutive_control_deadline_aborts_ = 0;
         }
         if (!motion_enabled_ || !has_target_) {
             return;
@@ -955,6 +977,7 @@ private:
         }
         motion_enabled_ = false;
         has_target_ = false;
+        consecutive_control_deadline_aborts_ = 0;
         command_velocity_.fill(0.0);
     }
 
@@ -998,6 +1021,8 @@ private:
              << ";has_target=" << has_target_
              << ";control_tick_count=" << control_tick_count_
              << ";control_deadline_misses=" << control_deadline_misses_
+             << ";consecutive_control_deadline_aborts="
+             << consecutive_control_deadline_aborts_
              << ";last_control_period_s=" << last_control_period_seconds_
              << ";max_control_period_s=" << max_control_period_seconds_;
         status.data = stream.str();
@@ -1041,6 +1066,8 @@ private:
     double state_rate_hz_{20.0};
     double control_deadline_warning_factor_{1.5};
     double control_deadline_abort_seconds_{0.05};
+    int control_deadline_abort_consecutive_misses_{2};
+    int consecutive_control_deadline_aborts_{0};
     std::vector<std::string> joint_names_;
     std::vector<double> lower_limits_;
     std::vector<double> upper_limits_;

@@ -24,6 +24,7 @@ HEAD_TOPIC="/camera_head/color/image_raw/compressed"
 WRIST_TOPIC="/camera_wrist/color/image_raw/compressed"
 HEAD_SERIAL="CPCD7530003J"
 WRIST_SERIAL="CPCBC5300077"
+BACKGROUND_CPU_LIST="${ONE_ARM_BACKGROUND_CPUS:-}"
 
 mkdir -p "${RUNTIME_DIR}"
 
@@ -41,6 +42,19 @@ source "${ORBBEC_SETUP}"
 # shellcheck disable=SC1090
 source "${WORKSPACE_SETUP}"
 set -u
+
+configure_background_cpu_set() {
+  local cpu_count
+  cpu_count="$(nproc)"
+  if [[ -z "${BACKGROUND_CPU_LIST}" ]]; then
+    if (( cpu_count >= 3 )); then
+      BACKGROUND_CPU_LIST="2-$((cpu_count - 1))"
+    else
+      BACKGROUND_CPU_LIST="0"
+    fi
+  fi
+  taskset -c "${BACKGROUND_CPU_LIST}" true >/dev/null
+}
 
 component_pid_file() {
   printf '%s/%s.pid\n' "${RUNTIME_DIR}" "$1"
@@ -206,6 +220,7 @@ preflight_all() {
 
 start_cameras() {
   preflight_all
+  configure_background_cpu_set
   if component_alive cameras; then
     echo "ERROR: this launcher's camera process is already running." >&2
     return 3
@@ -216,7 +231,8 @@ start_cameras() {
     return 3
   fi
   start_component cameras \
-    ros2 launch one_arm_teleop_bridge dataset_cameras.launch.py
+    nice -n 5 taskset -c "${BACKGROUND_CPU_LIST}" \
+      ros2 launch one_arm_teleop_bridge dataset_cameras.launch.py
   if ! wait_for_topic_publisher "${HEAD_TOPIC}" 25 ||
      ! wait_for_topic_publisher "${WRIST_TOPIC}" 25; then
     tail -n 80 "$(component_log_file cameras)" >&2 || true
@@ -265,6 +281,7 @@ start_recording() {
     return 3
   fi
   preflight_storage
+  configure_background_cpu_set
   wait_for_record_topics
   task="$(printf '%s' "${task_base64}" | base64 --decode)"
   operator="$(printf '%s' "${operator_base64}" | base64 --decode)"
@@ -277,7 +294,8 @@ start_recording() {
   mkdir -p "${RAW_ROOT}"
   rm -f -- "${EPISODE_PATH_FILE}"
   start_component recorder \
-    python3 "${PROJECT_ROOT}/tools/ros2_episode_recorder.py" \
+    nice -n 5 taskset -c "${BACKGROUND_CPU_LIST}" \
+      python3 "${PROJECT_ROOT}/tools/ros2_episode_recorder.py" \
       --name "${episode_name}" \
       --task "${task}" \
       --operator "${operator}" \

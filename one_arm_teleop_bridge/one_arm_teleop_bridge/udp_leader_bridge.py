@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import socket
 import time
+from collections import deque
 from typing import Sequence
 
 import rclpy
@@ -53,6 +54,7 @@ class UdpLeaderBridge(Node):
         self.declare_parameter("max_future_skew_seconds", 0.25)
         self.declare_parameter("packet_timeout_seconds", 0.30)
         self.declare_parameter("stop_on_rejected_packet", False)
+        self.declare_parameter("minimum_packet_rate_hz_for_motion", 0.0)
         self.declare_parameter("follower_state_timeout_seconds", 0.30)
         self.declare_parameter("joint_signs", [1.0] * JOINT_COUNT)
         self.declare_parameter("scale_rad_per_pulse", [0.0] * JOINT_COUNT)
@@ -75,6 +77,9 @@ class UdpLeaderBridge(Node):
         )
         self.stop_on_rejected_packet = bool(
             self.get_parameter("stop_on_rejected_packet").value
+        )
+        self.minimum_packet_rate_hz = float(
+            self.get_parameter("minimum_packet_rate_hz_for_motion").value
         )
         self.follower_timeout = float(
             self.get_parameter("follower_state_timeout_seconds").value
@@ -147,6 +152,7 @@ class UdpLeaderBridge(Node):
         self.last_deadman_held = False
         self.last_packet_age_seconds: float | None = None
         self.last_leader_received = 0.0
+        self.accepted_packet_times: deque[float] = deque(maxlen=64)
         self.last_follower_position: tuple[float, ...] | None = None
         self.last_follower_received = 0.0
         self.mapping_enabled = False
@@ -228,6 +234,12 @@ class UdpLeaderBridge(Node):
             or now - self.last_leader_received > self.packet_timeout
         ):
             reasons.append("no recent leader packet")
+        packet_rate = self._recent_packet_rate_hz()
+        if packet_rate < self.minimum_packet_rate_hz:
+            reasons.append(
+                f"leader packet rate {packet_rate:.2f} Hz is below "
+                f"{self.minimum_packet_rate_hz:.2f} Hz"
+            )
         if not self.gripper_only_mode:
             if not self.calibration_complete:
                 reasons.append("calibration_complete is false")
@@ -307,6 +319,17 @@ class UdpLeaderBridge(Node):
         self.stop_requests += 1
         self.get_logger().error(f"STOP published: {reason}")
 
+    def _recent_packet_rate_hz(self) -> float:
+        if len(self.accepted_packet_times) < 2:
+            return 0.0
+        duration = (
+            self.accepted_packet_times[-1] -
+            self.accepted_packet_times[0]
+        )
+        if duration <= 0.0:
+            return 0.0
+        return (len(self.accepted_packet_times) - 1) / duration
+
     def _follower_state_callback(self, msg: JointState) -> None:
         try:
             self.last_follower_position = self._ordered_positions(msg)
@@ -365,6 +388,7 @@ class UdpLeaderBridge(Node):
                 if frame.session_id != self.current_session:
                     self.current_session = frame.session_id
                     self.last_sequence = None
+                    self.accepted_packet_times.clear()
                     self.unwrapper.reset()
                     self.signal_filter.reset()
                     if self.mapping_enabled:
@@ -410,7 +434,9 @@ class UdpLeaderBridge(Node):
             self.last_filtered_position = filtered_position
             self.last_deadman_held = frame.deadman_held
             self.last_packet_age_seconds = packet_age
-            self.last_leader_received = time.monotonic()
+            received_at = time.monotonic()
+            self.last_leader_received = received_at
+            self.accepted_packet_times.append(received_at)
             raw_msg = Float64MultiArray()
             raw_msg.data = [float(value) for value in leader_position]
             self.raw_pub.publish(raw_msg)
@@ -481,6 +507,8 @@ class UdpLeaderBridge(Node):
             f"session={self.current_session or 'none'};"
             f"sequence={self.last_sequence if self.last_sequence is not None else -1};"
             f"packet_age_s={self.last_packet_age_seconds if self.last_packet_age_seconds is not None else -1:.3f};"
+            f"packet_rate_hz={self._recent_packet_rate_hz():.2f};"
+            f"minimum_packet_rate_hz={self.minimum_packet_rate_hz:.2f};"
             f"stop_on_rejected_packet={self.stop_on_rejected_packet};"
             f"accepted_packets={self.accepted_packets};"
             f"consecutive_accepted_packets={self.consecutive_accepted_packets};"

@@ -6,7 +6,7 @@
 set -Eeo pipefail
 
 ACTION="${1:-status}"
-EXPECTED_SOURCE_IP="${2:-${ONE_ARM_WINDOWS_IP:-192.168.0.105}}"
+EXPECTED_SOURCE_IP="${2:-${ONE_ARM_WINDOWS_IP:-192.168.2.130}}"
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ROS_DISTRO_NAME="${ROS_DISTRO:-jazzy}"
 ROS_SETUP="/opt/ros/${ROS_DISTRO_NAME}/setup.bash"
@@ -15,6 +15,8 @@ RUNTIME_DIR="/tmp/one_arm_teleop_full_${UID}"
 GRIPPER_DEVICE="/dev/serial/by-id/usb-1a86_USB_Single_Serial_5ABB000800-if00"
 ARM_CONFIG="${PROJECT_ROOT}/servo_controller/config/full_teleop_attended.yaml"
 BRIDGE_CONFIG="${PROJECT_ROOT}/one_arm_teleop_bridge/config/full_teleop_attended.yaml"
+CONTROL_CPU="${ONE_ARM_CONTROL_CPU:-1}"
+BACKGROUND_CPU_LIST="${ONE_ARM_BACKGROUND_CPUS:-}"
 
 mkdir -p "${RUNTIME_DIR}"
 
@@ -32,6 +34,25 @@ source "${ROS_SETUP}"
 # shellcheck disable=SC1090
 source "${WORKSPACE_SETUP}"
 set -u
+
+configure_cpu_sets() {
+  local cpu_count
+  cpu_count="$(nproc)"
+  if [[ ! "${CONTROL_CPU}" =~ ^[0-9]+$ ]] ||
+     (( CONTROL_CPU >= cpu_count )); then
+    echo "ERROR: control CPU ${CONTROL_CPU} is invalid for ${cpu_count} CPUs." >&2
+    return 2
+  fi
+  if [[ -z "${BACKGROUND_CPU_LIST}" ]]; then
+    if (( cpu_count >= 3 )); then
+      BACKGROUND_CPU_LIST="2-$((cpu_count - 1))"
+    else
+      BACKGROUND_CPU_LIST="0"
+    fi
+  fi
+  taskset -c "${CONTROL_CPU}" true >/dev/null
+  taskset -c "${BACKGROUND_CPU_LIST}" true >/dev/null
+}
 
 component_pid_file() {
   printf '%s/%s.pid\n' "${RUNTIME_DIR}" "$1"
@@ -263,9 +284,11 @@ start_stack() {
     echo "ERROR: Armstrong controller 192.168.2.226 is unreachable." >&2
     exit 4
   }
+  configure_cpu_sets
 
   start_component arm \
-    ros2 run servo_controller safe_one_arm_servo --ros-args \
+    taskset -c "${CONTROL_CPU}" \
+      ros2 run servo_controller safe_one_arm_servo --ros-args \
       --params-file "${ARM_CONFIG}" \
       -p dry_run:=false \
       -p hardware_power_authorized:=true \
@@ -273,11 +296,13 @@ start_stack() {
       -p hardware_motion_authorized:=true \
       -p limits_configured:=true
   start_component gripper \
-    ros2 run servo_controller safe_gripper_controller --ros-args \
+    taskset -c "${BACKGROUND_CPU_LIST}" \
+      ros2 run servo_controller safe_gripper_controller --ros-args \
       --params-file "${ARM_CONFIG}" \
       -p dry_run:=false
   start_component bridge \
-    ros2 run one_arm_teleop_bridge udp_leader_bridge --ros-args \
+    taskset -c "${BACKGROUND_CPU_LIST}" \
+      ros2 run one_arm_teleop_bridge udp_leader_bridge --ros-args \
       --params-file "${BRIDGE_CONFIG}" \
       -p dry_run:=false \
       -p expected_source_ip:="${EXPECTED_SOURCE_IP}"
@@ -294,6 +319,7 @@ start_stack() {
   ensure_components_running
   echo "STACK_STARTED_NO_MOTION"
   echo "Expected Windows UDP source: ${EXPECTED_SOURCE_IP}"
+  echo "CPU placement: arm=${CONTROL_CPU} background=${BACKGROUND_CPU_LIST}"
   topic_once /right_arm/safety_status 3 || true
 }
 
@@ -379,11 +405,32 @@ arm_stack() {
     exit 6
   fi
 
-  if ! call_set_bool /right_arm/set_motion_enabled true ||
-     ! wait_status_field "motion_enabled=1" 10 ||
+  # Arm the mapper first. Released preview frames are intentionally ignored,
+  # so this cannot publish a motion target before Windows Space. This ordering
+  # also prevents the servo gate from sitting open while later startup work
+  # competes for CPU time.
+  if ! call_set_bool /teleop/set_enabled true ||
      ! call_set_bool /right_arm/set_gripper_enabled true ||
-     ! call_set_bool /teleop/set_enabled true; then
+     ! call_set_bool /right_arm/set_motion_enabled true ||
+     ! wait_status_field "motion_enabled=1" 10; then
     echo "ERROR: arming failed. Running ordered safety shutdown." >&2
+    safe_hardware_shutdown || true
+    show_logs
+    exit 6
+  fi
+
+  # A service success is not enough: keep observing the real node after it
+  # enters servo mode so an immediate watchdog/deadline disarm cannot be
+  # mistaken for a ready system.
+  sleep 1
+  ensure_components_running
+  local armed_status
+  armed_status="$(topic_once /right_arm/safety_status 4 || true)"
+  printf '%s\n' "${armed_status}"
+  if ! grep -Fq "motion_enabled=1" <<<"${armed_status}" ||
+     ! grep -Fq "servo_mode_entered=1" <<<"${armed_status}" ||
+     ! grep -Fq "robot_error_code=0" <<<"${armed_status}"; then
+    echo "ERROR: servo gate did not remain stable for one second." >&2
     safe_hardware_shutdown || true
     show_logs
     exit 6

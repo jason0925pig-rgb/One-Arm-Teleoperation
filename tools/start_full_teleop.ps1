@@ -3,7 +3,8 @@ param(
     [string]$ComPort = "COM10",
     [string]$UbuntuHost = "armstrong-host",
     [string]$UbuntuProject = "/home/tele/onearm_teleop/One-Arm-Teleoperation",
-    [string]$UbuntuUdpTarget = "192.168.0.36:5005",
+    [string]$UbuntuUdpTarget = "192.168.2.116:5005",
+    [string]$RequiredWindowsSourceIp = "192.168.2.130",
     [string]$UbuntuRosDistro = "",
     [string]$UbuntuOrbbecSetup = "",
     [string]$UbuntuLerobotPython = "",
@@ -52,6 +53,34 @@ function Get-UdpSourceAddress {
     }
     finally {
         $client.Dispose()
+    }
+}
+
+function Assert-MotionNetworkPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$Target,
+        [Parameter(Mandatory = $true)][string]$SourceIp
+    )
+
+    $localAddress = Get-NetIPAddress `
+        -AddressFamily IPv4 `
+        -IPAddress $SourceIp `
+        -ErrorAction SilentlyContinue
+    if ($null -eq $localAddress) {
+        throw (
+            "Required motion source address {0} is not configured on Windows. " +
+            "No camera or robot process was started."
+        ) -f $SourceIp
+    }
+
+    $hostPart = ($Target -split ":", 2)[0]
+    & ping.exe -n 2 -w 1000 -S $SourceIp $hostPart *> $null
+    if ($LASTEXITCODE -ne 0) {
+        throw (
+            "Wired motion path {0} -> {1} is unreachable. No camera or " +
+            "robot process was started. Check the cable/switch/Ubuntu " +
+            "Ethernet link; do not fall back to Wi-Fi for teleoperation."
+        ) -f $SourceIp, $hostPart
     }
 }
 
@@ -146,7 +175,15 @@ $targetParts = $UbuntuUdpTarget -split ":", 2
 if ($targetParts.Count -ne 2) {
     throw "UbuntuUdpTarget must be HOST:PORT."
 }
-$windowsSourceIp = Get-UdpSourceAddress -Target $UbuntuUdpTarget
+if ([string]::IsNullOrWhiteSpace($RequiredWindowsSourceIp)) {
+    $windowsSourceIp = Get-UdpSourceAddress -Target $UbuntuUdpTarget
+}
+else {
+    $windowsSourceIp = $RequiredWindowsSourceIp
+}
+Assert-MotionNetworkPath `
+    -Target $UbuntuUdpTarget `
+    -SourceIp $windowsSourceIp
 if ([string]::IsNullOrEmpty($Task)) {
     $Task = Read-Host "Task prompt (exact text stored in LeRobot)"
 }
@@ -176,7 +213,8 @@ if (Test-Path -LiteralPath $script:ReadyFile) {
 Write-Host "============================================================"
 Write-Host "One-Arm Teleoperation / PowerShell launcher"
 Write-Host "Windows source IP : $windowsSourceIp"
-Write-Host "Ubuntu SSH target : $UbuntuHost"
+Write-Host "SSH control path  : $UbuntuHost"
+Write-Host "UDP motion target : $UbuntuUdpTarget"
 Write-Host "Ubuntu project    : $UbuntuProject"
 Write-Host "ZLink2 port       : $ComPort"
 Write-Host "Task              : $Task"
@@ -215,6 +253,7 @@ try {
             [System.Globalization.CultureInfo]::InvariantCulture
         ),
         "--udp-target", $UbuntuUdpTarget,
+        "--udp-bind-host", $windowsSourceIp,
         "--deadman",
         "--activation-file", $script:ReadyFile,
         "--session-name", $SessionName
