@@ -157,7 +157,7 @@ preflight_storage() {
     echo "The filesystem may still have root-reserved ext4 blocks; df free space alone is insufficient." >&2
     return 8
   fi
-  mkdir -p "${RAW_ROOT}" "${LEROBOT_ROOT}"
+  mkdir -p "${RAW_ROOT}"
 }
 
 preflight_cameras() {
@@ -274,7 +274,7 @@ start_recording() {
     return 2
   }
 
-  mkdir -p "${RAW_ROOT}" "${LEROBOT_ROOT}"
+  mkdir -p "${RAW_ROOT}"
   rm -f -- "${EPISODE_PATH_FILE}"
   start_component recorder \
     python3 "${PROJECT_ROOT}/tools/ros2_episode_recorder.py" \

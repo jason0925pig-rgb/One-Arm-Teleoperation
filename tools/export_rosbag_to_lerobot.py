@@ -374,9 +374,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--head-topic", default=DEFAULT_HEAD_TOPIC)
     parser.add_argument("--wrist-topic", default=DEFAULT_WRIST_TOPIC)
     parser.add_argument("--max-state-skew-ms", type=float, default=75.0)
-    parser.add_argument("--max-action-skew-ms", type=float, default=20.0)
+    parser.add_argument("--max-action-skew-ms", type=float, default=60.0)
     parser.add_argument("--max-camera-skew-ms", type=float, default=50.0)
-    parser.add_argument("--max-discrete-age-ms", type=float, default=250.0)
+    parser.add_argument("--max-discrete-age-ms", type=float, default=5000.0)
     parser.add_argument(
         "--max-camera-duplicate-ratio", type=float, default=0.05
     )
