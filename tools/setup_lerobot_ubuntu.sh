@@ -6,8 +6,9 @@ set -Eeo pipefail
 VENV="${ONE_ARM_LEROBOT_VENV:-/home/tele/.venvs/onearm-lerobot}"
 ROS_SETUP="/opt/ros/${ROS_DISTRO:-jazzy}/setup.bash"
 LEROBOT_VERSION="${ONE_ARM_LEROBOT_VERSION:-0.6.0}"
-TORCH_VERSION="${ONE_ARM_TORCH_VERSION:-2.7.1}"
-TORCHVISION_VERSION="${ONE_ARM_TORCHVISION_VERSION:-0.22.1}"
+TORCH_VERSION="${ONE_ARM_TORCH_VERSION:-2.8.0}"
+TORCHVISION_VERSION="${ONE_ARM_TORCHVISION_VERSION:-0.23.0}"
+TORCHCODEC_VERSION="${ONE_ARM_TORCHCODEC_VERSION:-0.7.0}"
 PYPI_INDEX="${ONE_ARM_PYPI_INDEX:-https://pypi.tuna.tsinghua.edu.cn/simple}"
 
 [[ -r "${ROS_SETUP}" ]] || {
@@ -34,7 +35,8 @@ fi
   "scipy>=1.13,<2" \
   "setuptools>=71,<80" \
   "numexpr>=2.10,<3" \
-  "bottleneck>=1.4,<2"
+  "bottleneck>=1.4,<2" \
+  "torchcodec==${TORCHCODEC_VERSION}"
 "${VENV}/bin/python" - <<'PY'
 import cv2
 import lerobot
@@ -42,12 +44,15 @@ import pandas
 import pyarrow
 import rclpy
 import rosbag2_py
+import torch
+import torchcodec
 from lerobot.datasets import LeRobotDataset
 
 print(
     "LeRobot environment ready: "
     f"lerobot={lerobot.__version__} pandas={pandas.__version__} "
-    f"pyarrow={pyarrow.__version__} dataset={LeRobotDataset.__name__}"
+    f"pyarrow={pyarrow.__version__} torch={torch.__version__} "
+    f"torchcodec={torchcodec.__version__} dataset={LeRobotDataset.__name__}"
 )
 PY
 echo "LEROBOT_VENV_READY=${VENV}"
