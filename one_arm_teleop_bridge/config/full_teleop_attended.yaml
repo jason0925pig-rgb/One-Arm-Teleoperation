@@ -29,11 +29,15 @@ udp_leader_bridge:
 
     require_deadman_for_motion: true
     enforce_packet_timestamps_for_motion: true
-    max_packet_age_seconds: 0.50
+    # Reject (do not execute) a frame more than one second old. A rejected
+    # frame no longer latches STOP by itself; only an explicit STOP, a robot
+    # fault, or the three-second valid-packet watchdog does that.
+    max_packet_age_seconds: 1.00
     # Windows can lead Ubuntu by about 0.5 s. Keep timestamp validation
-    # enabled while allowing the measured clock drift and Wi-Fi jitter.
+    # enabled while allowing the measured clock drift and network jitter.
     max_future_skew_seconds: 1.00
     packet_timeout_seconds: 3.0
+    stop_on_rejected_packet: false
 
     # Actual robot feedback remains independently guarded at 300 ms.
     follower_state_timeout_seconds: 0.80

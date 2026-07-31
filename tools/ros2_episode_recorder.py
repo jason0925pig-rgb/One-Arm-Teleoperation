@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import signal
 import socket
@@ -88,6 +89,19 @@ def write_metadata(path: Path, payload: dict[str, Any]) -> None:
         encoding="utf-8",
     )
     temporary.replace(path)
+
+
+def signal_process_group(
+    process: subprocess.Popen[Any],
+    signal_number: int,
+) -> None:
+    """Signal rosbag and any helper processes in its isolated session."""
+    if process.poll() is not None:
+        return
+    try:
+        os.killpg(process.pid, signal_number)
+    except ProcessLookupError:
+        return
 
 
 def available_topics() -> set[str]:
@@ -340,8 +354,24 @@ def main() -> int:
     print("Recorder is passive. Press Ctrl+C to finish and finalize metadata.")
     started = time.monotonic()
     stop_reason = "duration_complete" if args.duration is not None else "rosbag_exit"
+    pending_stop_signal: int | None = None
+
+    def remember_stop_signal(
+        signal_number: int,
+        _frame: Any,
+    ) -> None:
+        nonlocal pending_stop_signal
+        if pending_stop_signal is None:
+            pending_stop_signal = signal_number
+
+    # The recorder supervisor is launched as a background shell job. Bash may
+    # make such jobs inherit SIGINT=ignored, so install handlers explicitly
+    # instead of relying on Python's default KeyboardInterrupt behavior.
+    signal.signal(signal.SIGINT, remember_stop_signal)
+    signal.signal(signal.SIGTERM, remember_stop_signal)
+
     try:
-        process = subprocess.Popen(command)
+        process = subprocess.Popen(command, start_new_session=True)
     except OSError as exc:
         metadata["status"] = "error"
         metadata["ended_utc"] = utc_now()
@@ -360,24 +390,28 @@ def main() -> int:
     try:
         while process.poll() is None:
             if args.duration is not None and time.monotonic() - started >= args.duration:
-                process.send_signal(signal.SIGINT)
+                signal_process_group(process, signal.SIGINT)
                 stop_reason = "duration_complete"
+                break
+            if pending_stop_signal is not None:
+                signal_process_group(process, signal.SIGINT)
+                stop_reason = (
+                    "operator_ctrl_c"
+                    if pending_stop_signal == signal.SIGINT
+                    else "supervisor_sigterm"
+                )
                 break
             time.sleep(0.1)
         process.wait(timeout=ROSBAG_GRACEFUL_STOP_TIMEOUT_SECONDS)
-    except KeyboardInterrupt:
-        stop_reason = "operator_ctrl_c"
-        process.send_signal(signal.SIGINT)
-        try:
-            process.wait(timeout=ROSBAG_GRACEFUL_STOP_TIMEOUT_SECONDS)
-        except subprocess.TimeoutExpired:
-            process.terminate()
-            process.wait(timeout=ROSBAG_TERMINATE_TIMEOUT_SECONDS)
-            stop_reason = "rosbag_forced_terminate"
     except subprocess.TimeoutExpired:
-        process.terminate()
-        process.wait(timeout=ROSBAG_TERMINATE_TIMEOUT_SECONDS)
-        stop_reason = "rosbag_shutdown_timeout"
+        signal_process_group(process, signal.SIGTERM)
+        stop_reason = "rosbag_forced_terminate"
+        try:
+            process.wait(timeout=ROSBAG_TERMINATE_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            signal_process_group(process, signal.SIGKILL)
+            process.wait()
+            stop_reason = "rosbag_forced_kill"
 
     duration = time.monotonic() - started
     metadata["status"] = "complete" if process.returncode == 0 else "error"

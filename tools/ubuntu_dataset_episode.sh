@@ -321,15 +321,22 @@ stop_recorder() {
         sleep 0.20
       done
       if kill -0 "${pid}" 2>/dev/null; then
-        echo "WARNING: recorder shutdown timed out after ${RECORDER_STOP_TIMEOUT_SECONDS}s; terminating its process group." >&2
-        kill -TERM -- "-${pid}" 2>/dev/null || kill -TERM "${pid}" 2>/dev/null || true
-        deadline=$((SECONDS + 5))
+        echo "WARNING: recorder shutdown timed out after ${RECORDER_STOP_TIMEOUT_SECONDS}s; asking its supervisor to terminate rosbag." >&2
+        kill -TERM "${pid}" 2>/dev/null || true
+        deadline=$((SECONDS + 20))
         while kill -0 "${pid}" 2>/dev/null && (( SECONDS < deadline )); do
           sleep 0.10
         done
       fi
       if kill -0 "${pid}" 2>/dev/null; then
-        echo "ERROR: recorder is still alive: pid=${pid}" >&2
+        local child_pid
+        while read -r child_pid; do
+          [[ "${child_pid}" =~ ^[0-9]+$ ]] || continue
+          kill -KILL -- "-${child_pid}" 2>/dev/null ||
+            kill -KILL "${child_pid}" 2>/dev/null || true
+        done < <(pgrep -P "${pid}" 2>/dev/null || true)
+        kill -KILL "${pid}" 2>/dev/null || true
+        echo "ERROR: recorder required SIGKILL: pid=${pid}" >&2
         return 1
       fi
     fi
@@ -351,6 +358,23 @@ stop_all() {
   echo "DATASET_CAPTURE_STOPPED"
 }
 
+archive_runtime_logs() {
+  local episode_dir="$1"
+  local destination="${episode_dir}/runtime_logs"
+  local source
+  mkdir -p "${destination}"
+  for source in \
+    "${RUNTIME_DIR}/recorder.log" \
+    "${RUNTIME_DIR}/cameras.log" \
+    "/tmp/one_arm_teleop_full_${UID}/arm.log" \
+    "/tmp/one_arm_teleop_full_${UID}/gripper.log" \
+    "/tmp/one_arm_teleop_full_${UID}/bridge.log"; do
+    if [[ -r "${source}" ]]; then
+      cp -f -- "${source}" "${destination}/$(basename "${source}")"
+    fi
+  done
+}
+
 finalize_episode() {
   local outcome="$1"
   local repo_id="$2"
@@ -368,8 +392,11 @@ finalize_episode() {
     return 10
   }
   episode_dir="$(<"${EPISODE_PATH_FILE}")"
+  archive_runtime_logs "${episode_dir}"
   python3 "${PROJECT_ROOT}/tools/set_episode_outcome.py" \
-    "${episode_dir}" --outcome "${outcome}"
+    "${episode_dir}" \
+    --outcome "${outcome}" \
+    --recover-closed-recording
   if [[ "${outcome}" == "failure" ]]; then
     echo "EPISODE_MARKED_FAILURE_RAW_PRESERVED"
     echo "EPISODE_DIR=${episode_dir}"

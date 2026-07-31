@@ -52,6 +52,7 @@ class UdpLeaderBridge(Node):
         self.declare_parameter("max_packet_age_seconds", 0.50)
         self.declare_parameter("max_future_skew_seconds", 0.25)
         self.declare_parameter("packet_timeout_seconds", 0.30)
+        self.declare_parameter("stop_on_rejected_packet", False)
         self.declare_parameter("follower_state_timeout_seconds", 0.30)
         self.declare_parameter("joint_signs", [1.0] * JOINT_COUNT)
         self.declare_parameter("scale_rad_per_pulse", [0.0] * JOINT_COUNT)
@@ -71,6 +72,9 @@ class UdpLeaderBridge(Node):
         )
         self.packet_timeout = float(
             self.get_parameter("packet_timeout_seconds").value
+        )
+        self.stop_on_rejected_packet = bool(
+            self.get_parameter("stop_on_rejected_packet").value
         )
         self.follower_timeout = float(
             self.get_parameter("follower_state_timeout_seconds").value
@@ -385,8 +389,18 @@ class UdpLeaderBridge(Node):
                 self.rejected_packets += 1
                 self.consecutive_accepted_packets = 0
                 self.last_rejection_reason = str(exc).replace(";", ",")
-                if self.mapping_enabled:
+                if self.mapping_enabled and self.stop_on_rejected_packet:
                     self._request_stop(str(exc))
+                elif self.mapping_enabled:
+                    # Never publish a rejected frame.  An isolated delayed,
+                    # duplicated, malformed or encoder-spike packet is simply
+                    # discarded; last_leader_received is deliberately not
+                    # refreshed, so a sustained bad stream still reaches the
+                    # normal packet watchdog and produces STOP.
+                    self.get_logger().warn(
+                        "Rejected leader packet while mapping is enabled; "
+                        f"holding the last accepted target: {exc}"
+                    )
                 continue
 
             self.accepted_packets += 1
@@ -467,6 +481,7 @@ class UdpLeaderBridge(Node):
             f"session={self.current_session or 'none'};"
             f"sequence={self.last_sequence if self.last_sequence is not None else -1};"
             f"packet_age_s={self.last_packet_age_seconds if self.last_packet_age_seconds is not None else -1:.3f};"
+            f"stop_on_rejected_packet={self.stop_on_rejected_packet};"
             f"accepted_packets={self.accepted_packets};"
             f"consecutive_accepted_packets={self.consecutive_accepted_packets};"
             f"rejected_packets={self.rejected_packets};"

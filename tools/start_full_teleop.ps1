@@ -31,6 +31,9 @@ function Invoke-CheckedSsh {
     & ssh.exe `
         -o BatchMode=yes `
         -o ConnectTimeout=8 `
+        -o ServerAliveInterval=15 `
+        -o ServerAliveCountMax=8 `
+        -o TCPKeepAlive=yes `
         $UbuntuHost `
         $RemoteCommand
     if ($LASTEXITCODE -ne 0) {
@@ -61,6 +64,9 @@ function Stop-RemoteStack {
     & ssh.exe `
         -o BatchMode=yes `
         -o ConnectTimeout=8 `
+        -o ServerAliveInterval=15 `
+        -o ServerAliveCountMax=8 `
+        -o TCPKeepAlive=yes `
         $UbuntuHost `
         "cd $remoteProject && ${remoteEnvironment}bash tools/ubuntu_full_teleop_stack.sh stop"
     if ($LASTEXITCODE -ne 0) {
@@ -78,6 +84,9 @@ function Stop-DatasetCapture {
     & ssh.exe `
         -o BatchMode=yes `
         -o ConnectTimeout=8 `
+        -o ServerAliveInterval=15 `
+        -o ServerAliveCountMax=8 `
+        -o TCPKeepAlive=yes `
         $UbuntuHost `
         "cd $remoteProject && ${remoteEnvironment}bash tools/ubuntu_dataset_episode.sh stop"
     if ($LASTEXITCODE -ne 0) {
