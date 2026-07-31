@@ -30,7 +30,7 @@ class CameraRateProbe(Node):
     def __init__(self, topics: tuple[str, ...]) -> None:
         super().__init__("onearm_camera_rate_probe")
         self.samples = {topic: Samples() for topic in topics}
-        self.subscriptions = [
+        self.camera_subscriptions = [
             self.create_subscription(
                 CompressedImage,
                 topic,
