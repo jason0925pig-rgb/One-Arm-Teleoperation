@@ -349,6 +349,35 @@ def _write_report(path: Path, payload: dict[str, Any]) -> None:
     temporary.replace(path)
 
 
+def _completed_export_index(
+    report_path: Path,
+    dataset_root: Path,
+    repo_id: str,
+) -> int | None:
+    """Return an existing completed export index for idempotent retries."""
+    if not report_path.is_file():
+        return None
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        index = int(report["dataset_episode_index"])
+        reported_root = Path(str(report["dataset_root"])).resolve()
+        reported_repo = str(report["repo_id"])
+        info = json.loads(
+            (dataset_root / "meta" / "info.json").read_text(encoding="utf-8")
+        )
+        total_episodes = int(info["total_episodes"])
+    except (KeyError, TypeError, ValueError, OSError, json.JSONDecodeError):
+        return None
+    if (
+        report.get("status") == "complete"
+        and reported_root == dataset_root
+        and reported_repo == repo_id
+        and 0 <= index < total_episodes
+    ):
+        return index
+    return None
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -425,6 +454,22 @@ def main() -> int:
     fps = args.fps or int(metadata.get("target_lerobot_fps", 30))
     if fps <= 0:
         raise SystemExit("FPS must be positive")
+    dataset_root = args.dataset_root.expanduser().resolve()
+    report_path = episode_dir / "lerobot_export_report.json"
+    if not args.dry_run:
+        completed_index = _completed_export_index(
+            report_path,
+            dataset_root,
+            args.repo_id,
+        )
+        if completed_index is not None:
+            print(
+                f"Episode is already exported as dataset episode "
+                f"{completed_index}; no duplicate was written."
+            )
+            print(f"Dataset: {dataset_root}")
+            print(f"Quality report: {report_path}")
+            return 0
 
     bag_dir = episode_dir / "rosbag"
     if not bag_dir.is_dir():
@@ -568,7 +613,6 @@ def main() -> int:
         },
         "status": "validated" if args.dry_run else "exporting",
     }
-    report_path = episode_dir / "lerobot_export_report.json"
     if args.dry_run:
         _write_report(report_path, quality)
         print(
@@ -585,7 +629,6 @@ def main() -> int:
             "Ubuntu export environment."
         ) from exc
 
-    dataset_root = args.dataset_root.expanduser().resolve()
     info_path = dataset_root / "meta" / "info.json"
     if info_path.exists():
         dataset = LeRobotDataset.resume(

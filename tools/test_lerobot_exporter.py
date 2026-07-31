@@ -1,3 +1,5 @@
+import json
+import tempfile
 import unittest
 from pathlib import Path
 import sys
@@ -9,6 +11,7 @@ TOOLS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOLS_DIR))
 
 from export_rosbag_to_lerobot import (
+    _completed_export_index,
     _feature_schema,
     _schema_matches,
     nearest_sample,
@@ -87,6 +90,67 @@ class FeatureSchemaTests(unittest.TestCase):
         current["action"] = dict(current["action"])
         current["action"]["shape"] = (7,)
         self.assertFalse(_schema_matches(current, expected))
+
+
+class ExportIdempotencyTests(unittest.TestCase):
+    def test_completed_report_prevents_duplicate_export(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            dataset_root = root / "dataset"
+            (dataset_root / "meta").mkdir(parents=True)
+            (dataset_root / "meta" / "info.json").write_text(
+                json.dumps({"total_episodes": 2}),
+                encoding="utf-8",
+            )
+            report_path = root / "report.json"
+            report_path.write_text(
+                json.dumps(
+                    {
+                        "status": "complete",
+                        "dataset_episode_index": 1,
+                        "dataset_root": str(dataset_root),
+                        "repo_id": "local/onearm_tele",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                _completed_export_index(
+                    report_path,
+                    dataset_root.resolve(),
+                    "local/onearm_tele",
+                ),
+                1,
+            )
+
+    def test_stale_report_does_not_suppress_export(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            dataset_root = root / "dataset"
+            (dataset_root / "meta").mkdir(parents=True)
+            (dataset_root / "meta" / "info.json").write_text(
+                json.dumps({"total_episodes": 1}),
+                encoding="utf-8",
+            )
+            report_path = root / "report.json"
+            report_path.write_text(
+                json.dumps(
+                    {
+                        "status": "complete",
+                        "dataset_episode_index": 1,
+                        "dataset_root": str(dataset_root),
+                        "repo_id": "local/onearm_tele",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.assertIsNone(
+                _completed_export_index(
+                    report_path,
+                    dataset_root.resolve(),
+                    "local/onearm_tele",
+                )
+            )
 
 
 if __name__ == "__main__":
