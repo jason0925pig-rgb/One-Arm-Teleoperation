@@ -32,7 +32,9 @@ fi
   --index-url "${PYPI_INDEX}" \
   "pandas>=2.2,<3" \
   "scipy>=1.13,<2" \
-  "setuptools>=71,<80"
+  "setuptools>=71,<80" \
+  "numexpr>=2.10,<3" \
+  "bottleneck>=1.4,<2"
 "${VENV}/bin/python" - <<'PY'
 import cv2
 import lerobot
