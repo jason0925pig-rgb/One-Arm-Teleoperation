@@ -19,6 +19,7 @@ LEROBOT_ROOT="${DATA_ROOT}/lerobot_dataset"
 RUNTIME_DIR="/tmp/one_arm_dataset_${UID}"
 EPISODE_PATH_FILE="${RUNTIME_DIR}/episode_path.txt"
 MINIMUM_FREE_BYTES="${ONE_ARM_DATASET_MIN_FREE_BYTES:-10737418240}"
+RECORDER_STOP_TIMEOUT_SECONDS="${ONE_ARM_RECORDER_STOP_TIMEOUT_SECONDS:-180}"
 HEAD_TOPIC="/camera_head/color/image_raw/compressed"
 WRIST_TOPIC="/camera_wrist/color/image_raw/compressed"
 HEAD_SERIAL="CPCD7530003J"
@@ -315,12 +316,12 @@ stop_recorder() {
     if [[ "${pid}" =~ ^[0-9]+$ ]] && kill -0 "${pid}" 2>/dev/null; then
       # Signal only the Python supervisor; it closes rosbag cleanly itself.
       kill -INT "${pid}" 2>/dev/null || true
-      deadline=$((SECONDS + 30))
+      deadline=$((SECONDS + RECORDER_STOP_TIMEOUT_SECONDS))
       while kill -0 "${pid}" 2>/dev/null && (( SECONDS < deadline )); do
         sleep 0.20
       done
       if kill -0 "${pid}" 2>/dev/null; then
-        echo "WARNING: recorder shutdown timed out; terminating its process group." >&2
+        echo "WARNING: recorder shutdown timed out after ${RECORDER_STOP_TIMEOUT_SECONDS}s; terminating its process group." >&2
         kill -TERM -- "-${pid}" 2>/dev/null || kill -TERM "${pid}" 2>/dev/null || true
         deadline=$((SECONDS + 5))
         while kill -0 "${pid}" 2>/dev/null && (( SECONDS < deadline )); do

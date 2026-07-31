@@ -49,6 +49,8 @@ DEFAULT_CAMERA_TOPICS = (
     "/camera_wrist/color/camera_info",
     "/diagnostics",
 )
+ROSBAG_GRACEFUL_STOP_TIMEOUT_SECONDS = 120.0
+ROSBAG_TERMINATE_TIMEOUT_SECONDS = 10.0
 LEROBOT_REQUIRED_TOPICS = (
     "/right_arm/executed_joint_command",
     "/right_arm/joint_states",
@@ -362,19 +364,19 @@ def main() -> int:
                 stop_reason = "duration_complete"
                 break
             time.sleep(0.1)
-        process.wait(timeout=15.0)
+        process.wait(timeout=ROSBAG_GRACEFUL_STOP_TIMEOUT_SECONDS)
     except KeyboardInterrupt:
         stop_reason = "operator_ctrl_c"
         process.send_signal(signal.SIGINT)
         try:
-            process.wait(timeout=15.0)
+            process.wait(timeout=ROSBAG_GRACEFUL_STOP_TIMEOUT_SECONDS)
         except subprocess.TimeoutExpired:
             process.terminate()
-            process.wait(timeout=5.0)
+            process.wait(timeout=ROSBAG_TERMINATE_TIMEOUT_SECONDS)
             stop_reason = "rosbag_forced_terminate"
     except subprocess.TimeoutExpired:
         process.terminate()
-        process.wait(timeout=5.0)
+        process.wait(timeout=ROSBAG_TERMINATE_TIMEOUT_SECONDS)
         stop_reason = "rosbag_shutdown_timeout"
 
     duration = time.monotonic() - started
