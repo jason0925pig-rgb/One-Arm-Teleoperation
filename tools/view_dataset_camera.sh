@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Usage: bash tools/view_dataset_camera.sh {chest|wrist}
 
-set -euo pipefail
+set -eo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ROS_SETUP="/opt/ros/${ROS_DISTRO:-humble}/setup.bash"
@@ -13,6 +13,7 @@ fi
 
 # shellcheck disable=SC1090
 source "${ROS_SETUP}"
+set -u
 export QT_X11_NO_MITSHM=1
 
 if [[ -z "${DISPLAY:-}" && " ${*} " != *" --snapshot "* ]]; then
