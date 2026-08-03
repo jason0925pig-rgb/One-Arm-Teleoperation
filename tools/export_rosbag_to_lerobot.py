@@ -587,6 +587,7 @@ def _positive_milliseconds(args: argparse.Namespace) -> None:
 
 
 def main() -> int:
+    overall_started = time.monotonic()
     args = build_parser().parse_args()
     _positive_milliseconds(args)
     episode_dir = args.episode_dir.expanduser().resolve()
@@ -636,10 +637,21 @@ def main() -> int:
         args.head_topic,
         args.wrist_topic,
     }
+    print(
+        f"LEROBOT_EXPORT_STAGE indexing_rosbag path={bag_dir}",
+        flush=True,
+    )
+    indexing_started = time.monotonic()
     streams, message_store = _read_rosbag(
         bag_dir,
         str(metadata.get("storage", "sqlite3")),
         topics,
+    )
+    print(
+        "LEROBOT_EXPORT_STAGE indexed_rosbag "
+        f"seconds={time.monotonic() - indexing_started:.1f} "
+        f"messages={sum(len(stream.times_ns) for stream in streams.values())}",
+        flush=True,
     )
     _validate_stream_type(
         streams[args.state_topic], {"sensor_msgs/msg/JointState"}
@@ -961,6 +973,10 @@ def main() -> int:
                     flush=True,
                 )
                 last_progress = now
+        print(
+            "LEROBOT_EXPORT_STAGE finalizing_video_parquet_metadata",
+            flush=True,
+        )
         dataset.save_episode()
         dataset.finalize()
     except Exception:
@@ -981,6 +997,7 @@ def main() -> int:
     )
     quality["video_codec"] = args.video_codec
     quality["video_decode_backend"] = "pyav"
+    quality["export_wall_seconds"] = time.monotonic() - overall_started
     quality["dataset_episode_index"] = int(dataset.num_episodes) - 1
     _write_report(report_path, quality)
     print(
