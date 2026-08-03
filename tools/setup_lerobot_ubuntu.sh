@@ -4,6 +4,7 @@
 set -Eeo pipefail
 
 VENV="${ONE_ARM_LEROBOT_VENV:-${HOME}/.venvs/onearm-lerobot}"
+PIP_CACHE_DIR="${ONE_ARM_PIP_CACHE_DIR:-$(dirname "${VENV}")/pip-cache}"
 if [[ -n "${ROS_DISTRO:-}" ]]; then
   ROS_DISTRO_NAME="${ROS_DISTRO}"
 elif [[ -r /opt/ros/humble/setup.bash ]]; then
@@ -45,6 +46,9 @@ fi
 }
 # shellcheck disable=SC1090
 source "${ROS_SETUP}"
+
+mkdir -p "${PIP_CACHE_DIR}"
+export PIP_CACHE_DIR
 
 if [[ ! -x "${VENV}/bin/python" ]]; then
   python3 -m venv --system-site-packages "${VENV}"
