@@ -24,9 +24,12 @@ if [[ "${ARCHITECTURE}" == "aarch64" || "${ARCHITECTURE}" == "arm64" ]]; then
   TORCH_VERSION="${ONE_ARM_TORCH_VERSION:-2.11.0}"
   TORCHVISION_VERSION="${ONE_ARM_TORCHVISION_VERSION:-0.26.0}"
   TORCHCODEC_VERSION="${ONE_ARM_TORCHCODEC_VERSION:-0.11.1}"
-  TORCH_INDEX="${PYPI_INDEX}"
-  TORCH_SPEC="torch==${TORCH_VERSION}"
-  TORCHVISION_SPEC="torchvision==${TORCHVISION_VERSION}"
+  # The regular PyPI ARM64 wheel pulls a full CUDA 13 toolkit, which is both
+  # unnecessary for export and incompatible with this JetPack 6.0 host.
+  # PyTorch's CPU index provides native ARM64 +cpu wheels without that stack.
+  TORCH_INDEX="${ONE_ARM_TORCH_INDEX:-https://download.pytorch.org/whl/cpu}"
+  TORCH_SPEC="torch==${TORCH_VERSION}+cpu"
+  TORCHVISION_SPEC="torchvision==${TORCHVISION_VERSION}+cpu"
 else
   TORCH_VERSION="${ONE_ARM_TORCH_VERSION:-2.8.0}"
   TORCHVISION_VERSION="${ONE_ARM_TORCHVISION_VERSION:-0.23.0}"

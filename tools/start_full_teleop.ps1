@@ -37,7 +37,7 @@ $profileDefaults = if ($DeploymentProfile -eq "new-humble") {
         # built against OpenCV 4.8 while Humble image_transport uses 4.5; the
         # mixed ABI can crash a camera container when a viewer subscribes.
         UbuntuOrbbecSetup = "/opt/ros/humble/setup.bash"
-        UbuntuLerobotPython = "/home/nvidia/.venvs/onearm-lerobot/bin/python"
+        UbuntuLerobotPython = "/home/nvidia/work/telop/.venvs/onearm-lerobot/bin/python"
         UbuntuDatasetDataRoot = "/home/nvidia/work/telop/onearm_Tele"
         UbuntuHeadSerial = "CP8284100034"
         UbuntuWristSerial = "CPCD75300083"
