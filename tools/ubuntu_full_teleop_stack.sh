@@ -12,7 +12,7 @@ ROS_DISTRO_NAME="${ROS_DISTRO:-jazzy}"
 ROS_SETUP="/opt/ros/${ROS_DISTRO_NAME}/setup.bash"
 WORKSPACE_SETUP="${PROJECT_ROOT}/install/setup.bash"
 RUNTIME_DIR="/tmp/one_arm_teleop_full_${UID}"
-GRIPPER_DEVICE="/dev/serial/by-id/usb-1a86_USB_Single_Serial_5ABB000800-if00"
+GRIPPER_DEVICE="${ONE_ARM_GRIPPER_DEVICE:-/dev/serial/by-id/usb-1a86_USB_Single_Serial_5ABB000800-if00}"
 ARM_CONFIG="${PROJECT_ROOT}/servo_controller/config/full_teleop_attended.yaml"
 BRIDGE_CONFIG="${PROJECT_ROOT}/one_arm_teleop_bridge/config/full_teleop_attended.yaml"
 CONTROL_CPU="${ONE_ARM_CONTROL_CPU:-1}"
@@ -299,7 +299,8 @@ start_stack() {
     taskset -c "${BACKGROUND_CPU_LIST}" \
       ros2 run servo_controller safe_gripper_controller --ros-args \
       --params-file "${ARM_CONFIG}" \
-      -p dry_run:=false
+      -p dry_run:=false \
+      -p port:="${GRIPPER_DEVICE}"
   start_component bridge \
     taskset -c "${BACKGROUND_CPU_LIST}" \
       ros2 run one_arm_teleop_bridge udp_leader_bridge --ros-args \

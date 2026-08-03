@@ -3,13 +3,38 @@
 
 set -Eeo pipefail
 
-VENV="${ONE_ARM_LEROBOT_VENV:-/home/tele/.venvs/onearm-lerobot}"
-ROS_SETUP="/opt/ros/${ROS_DISTRO:-jazzy}/setup.bash"
+VENV="${ONE_ARM_LEROBOT_VENV:-${HOME}/.venvs/onearm-lerobot}"
+if [[ -n "${ROS_DISTRO:-}" ]]; then
+  ROS_DISTRO_NAME="${ROS_DISTRO}"
+elif [[ -r /opt/ros/humble/setup.bash ]]; then
+  ROS_DISTRO_NAME="humble"
+else
+  ROS_DISTRO_NAME="jazzy"
+fi
+ROS_SETUP="/opt/ros/${ROS_DISTRO_NAME}/setup.bash"
 LEROBOT_VERSION="${ONE_ARM_LEROBOT_VERSION:-0.6.0}"
-TORCH_VERSION="${ONE_ARM_TORCH_VERSION:-2.8.0}"
-TORCHVISION_VERSION="${ONE_ARM_TORCHVISION_VERSION:-0.23.0}"
-TORCHCODEC_VERSION="${ONE_ARM_TORCHCODEC_VERSION:-0.7.0}"
-PYPI_INDEX="${ONE_ARM_PYPI_INDEX:-https://pypi.tuna.tsinghua.edu.cn/simple}"
+PYPI_INDEX="${ONE_ARM_PYPI_INDEX:-https://pypi.org/simple}"
+ARCHITECTURE="$(uname -m)"
+
+if [[ "${ARCHITECTURE}" == "aarch64" || "${ARCHITECTURE}" == "arm64" ]]; then
+  # LeRobot 0.6 publishes its Linux ARM64 TorchCodec dependency only from
+  # 0.11 onward; that wheel requires Torch 2.11.  This isolated environment
+  # is for dataset export.  SmolVLA GPU inference should use a separate,
+  # JetPack-compatible NVIDIA PyTorch/container environment.
+  TORCH_VERSION="${ONE_ARM_TORCH_VERSION:-2.11.0}"
+  TORCHVISION_VERSION="${ONE_ARM_TORCHVISION_VERSION:-0.26.0}"
+  TORCHCODEC_VERSION="${ONE_ARM_TORCHCODEC_VERSION:-0.11.1}"
+  TORCH_INDEX="${PYPI_INDEX}"
+  TORCH_SPEC="torch==${TORCH_VERSION}"
+  TORCHVISION_SPEC="torchvision==${TORCHVISION_VERSION}"
+else
+  TORCH_VERSION="${ONE_ARM_TORCH_VERSION:-2.8.0}"
+  TORCHVISION_VERSION="${ONE_ARM_TORCHVISION_VERSION:-0.23.0}"
+  TORCHCODEC_VERSION="${ONE_ARM_TORCHCODEC_VERSION:-0.7.0}"
+  TORCH_INDEX="${ONE_ARM_TORCH_INDEX:-https://download.pytorch.org/whl/cpu}"
+  TORCH_SPEC="torch==${TORCH_VERSION}+cpu"
+  TORCHVISION_SPEC="torchvision==${TORCHVISION_VERSION}+cpu"
+fi
 
 [[ -r "${ROS_SETUP}" ]] || {
   echo "ERROR: ROS setup is missing: ${ROS_SETUP}" >&2
@@ -23,9 +48,9 @@ if [[ ! -x "${VENV}/bin/python" ]]; then
 fi
 "${VENV}/bin/python" -m pip install --index-url "${PYPI_INDEX}" --upgrade pip
 "${VENV}/bin/python" -m pip install \
-  --index-url https://download.pytorch.org/whl/cpu \
-  "torch==${TORCH_VERSION}+cpu" \
-  "torchvision==${TORCHVISION_VERSION}+cpu"
+  --index-url "${TORCH_INDEX}" \
+  "${TORCH_SPEC}" \
+  "${TORCHVISION_SPEC}"
 "${VENV}/bin/python" -m pip install \
   --index-url "${PYPI_INDEX}" \
   "lerobot[dataset]==${LEROBOT_VERSION}"

@@ -14,6 +14,7 @@ param(
     [string]$UbuntuHeadSerial = "",
     [string]$UbuntuWristSerial = "",
     [string]$UbuntuPrimaryCameraRole = "",
+    [string]$UbuntuGripperDevice = "",
     [string]$SshIdentityFile = "$env:USERPROFILE\.ssh\one_arm_teleop_ed25519",
     [ValidateRange(1.0, 100.0)]
     [double]$RateHz = 100.0,
@@ -41,6 +42,7 @@ $profileDefaults = if ($DeploymentProfile -eq "new-humble") {
         UbuntuHeadSerial = "CP8284100034"
         UbuntuWristSerial = "CPCD75300083"
         UbuntuPrimaryCameraRole = "chest"
+        UbuntuGripperDevice = "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0"
     }
 }
 else {
@@ -59,6 +61,7 @@ else {
         UbuntuHeadSerial = "CPCD7530003J"
         UbuntuWristSerial = "CPCBC5300077"
         UbuntuPrimaryCameraRole = "head"
+        UbuntuGripperDevice = "/dev/serial/by-id/usb-1a86_USB_Single_Serial_5ABB000800-if00"
     }
 }
 foreach ($name in $profileDefaults.Keys) {
@@ -219,6 +222,9 @@ function Get-RemoteEnvironmentPrefix {
     if (-not [string]::IsNullOrWhiteSpace($UbuntuPrimaryCameraRole)) {
         $pairs["ONE_ARM_PRIMARY_CAMERA_ROLE"] = $UbuntuPrimaryCameraRole
     }
+    if (-not [string]::IsNullOrWhiteSpace($UbuntuGripperDevice)) {
+        $pairs["ONE_ARM_GRIPPER_DEVICE"] = $UbuntuGripperDevice
+    }
     if ($pairs.Count -eq 0) {
         return ""
     }
@@ -288,12 +294,13 @@ Write-Host "Task              : $Task"
 Write-Host "Dataset repo id   : $DatasetRepoId"
 Write-Host "Primary camera    : $UbuntuPrimaryCameraRole / $UbuntuHeadSerial"
 Write-Host "Wrist camera SN   : $UbuntuWristSerial"
+Write-Host "Gripper device    : $UbuntuGripperDevice"
 if (-not [string]::IsNullOrWhiteSpace($UbuntuDatasetDataRoot)) {
     Write-Host "Dataset root      : $UbuntuDatasetDataRoot"
 }
 Write-Host "============================================================"
 Write-Host "Stage 0 starts only the head/right-wrist RGB cameras and checks 30 FPS."
-Write-Host "The two chest cameras are excluded. The robot will NOT move."
+Write-Host "Unselected cameras are excluded. The robot will NOT move."
 
 try {
     # Treat the result as uncertain until SSH finishes. Cleanup is safe even
