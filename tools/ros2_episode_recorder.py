@@ -45,11 +45,7 @@ DEFAULT_TOPICS = (
 )
 DEFAULT_HEAD_TOPIC = "/camera_head/color/image_raw/compressed"
 DEFAULT_WRIST_TOPIC = "/camera_wrist/color/image_raw/compressed"
-DEFAULT_CAMERA_TOPICS = (
-    "/camera_head/color/camera_info",
-    "/camera_wrist/color/camera_info",
-    "/diagnostics",
-)
+DEFAULT_PRIMARY_CAMERA_FEATURE = "observation.images.head"
 ROSBAG_GRACEFUL_STOP_TIMEOUT_SECONDS = 120.0
 ROSBAG_TERMINATE_TIMEOUT_SECONDS = 10.0
 ROSBAG_START_TIMEOUT_SECONDS = 20.0
@@ -178,6 +174,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--head-topic", default=DEFAULT_HEAD_TOPIC)
     parser.add_argument("--wrist-topic", default=DEFAULT_WRIST_TOPIC)
+    parser.add_argument(
+        "--primary-camera-feature",
+        choices=("observation.images.head", "observation.images.chest"),
+        default=DEFAULT_PRIMARY_CAMERA_FEATURE,
+    )
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument(
         "--episode-path-file",
@@ -270,12 +271,17 @@ def main() -> int:
         return 3
 
     camera_topics = (args.head_topic, args.wrist_topic)
+    camera_info_topics = tuple(
+        topic.removesuffix("/image_raw/compressed") + "/camera_info"
+        for topic in camera_topics
+    )
     topics = tuple(
         dict.fromkeys(
             (
                 *DEFAULT_TOPICS,
                 *camera_topics,
-                *DEFAULT_CAMERA_TOPICS,
+                *camera_info_topics,
+                "/diagnostics",
                 *args.extra_topic,
             )
         )
@@ -329,7 +335,7 @@ def main() -> int:
         "recording_profile": args.profile,
         "target_lerobot_fps": args.fps,
         "camera_topics": {
-            "observation.images.head": args.head_topic,
+            args.primary_camera_feature: args.head_topic,
             "observation.images.wrist_right": args.wrist_topic,
         },
         "joint_state_topic": "/right_arm/joint_states",

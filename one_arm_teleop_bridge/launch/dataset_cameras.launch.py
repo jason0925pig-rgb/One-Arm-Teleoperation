@@ -11,17 +11,17 @@ from launch.substitutions import LaunchConfiguration
 
 
 def generate_launch_description():
-    """Start only the head and right-wrist Orbbec RGB streams.
+    """Start one fixed primary camera and the right-wrist Orbbec RGB stream.
 
-    The Armstrong also has two chest cameras. They are deliberately absent
-    from this launch description and therefore cannot enter the dataset.
-    Serial numbers were verified against the legacy mocap recorder on
-    2026-07-31.
+    The primary camera can be named ``camera_head`` for the legacy robot or
+    ``camera_chest`` for the Humble robot. Cameras not selected by serial
+    number are deliberately absent from the dataset.
     """
     orbbec_share = get_package_share_directory("orbbec_camera")
     driver_launch = PythonLaunchDescriptionSource(
         f"{orbbec_share}/launch/gemini_330_series.launch.py"
     )
+    primary_camera_name = LaunchConfiguration("primary_camera_name")
     head_serial = LaunchConfiguration("head_serial")
     wrist_serial = LaunchConfiguration("wrist_serial")
 
@@ -45,14 +45,16 @@ def generate_launch_description():
         "enable_frame_sync": "true",
         "enable_sync_host_time": "true",
         "use_hardware_time": "true",
-        "sync_mode": "free_run",
+        # These cameras do not share a hardware sync cable.  The Humble
+        # Orbbec driver also uses standalone in its own multi-camera launch.
+        "sync_mode": "standalone",
     }
 
     head = IncludeLaunchDescription(
         driver_launch,
         launch_arguments={
             **common_arguments,
-            "camera_name": "camera_head",
+            "camera_name": primary_camera_name,
             "serial_number": head_serial,
         }.items(),
     )
@@ -67,9 +69,14 @@ def generate_launch_description():
     return LaunchDescription(
         [
             DeclareLaunchArgument(
+                "primary_camera_name",
+                default_value="camera_head",
+                description="ROS name for the fixed primary camera",
+            ),
+            DeclareLaunchArgument(
                 "head_serial",
                 default_value="CPCD7530003J",
-                description="Serial number of the physical head camera",
+                description="Serial number of the fixed primary camera",
             ),
             DeclareLaunchArgument(
                 "wrist_serial",

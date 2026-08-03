@@ -20,7 +20,22 @@ RUNTIME_DIR="/tmp/one_arm_dataset_${UID}"
 EPISODE_PATH_FILE="${RUNTIME_DIR}/episode_path.txt"
 MINIMUM_FREE_BYTES="${ONE_ARM_DATASET_MIN_FREE_BYTES:-10737418240}"
 RECORDER_STOP_TIMEOUT_SECONDS="${ONE_ARM_RECORDER_STOP_TIMEOUT_SECONDS:-180}"
-HEAD_TOPIC="/camera_head/color/image_raw/compressed"
+PRIMARY_CAMERA_ROLE="${ONE_ARM_PRIMARY_CAMERA_ROLE:-head}"
+case "${PRIMARY_CAMERA_ROLE}" in
+  head)
+    PRIMARY_CAMERA_NAME="camera_head"
+    PRIMARY_CAMERA_FEATURE="observation.images.head"
+    ;;
+  chest)
+    PRIMARY_CAMERA_NAME="camera_chest"
+    PRIMARY_CAMERA_FEATURE="observation.images.chest"
+    ;;
+  *)
+    echo "ERROR: ONE_ARM_PRIMARY_CAMERA_ROLE must be head or chest." >&2
+    exit 2
+    ;;
+esac
+HEAD_TOPIC="/${PRIMARY_CAMERA_NAME}/color/image_raw/compressed"
 WRIST_TOPIC="/camera_wrist/color/image_raw/compressed"
 HEAD_SERIAL="${ONE_ARM_HEAD_SERIAL:-CPCD7530003J}"
 WRIST_SERIAL="${ONE_ARM_WRIST_SERIAL:-CPCBC5300077}"
@@ -214,8 +229,8 @@ preflight_all() {
   preflight_cameras
   preflight_python
   echo "DATASET_PREFLIGHT_OK"
-  echo "Only head=${HEAD_SERIAL} and right_wrist=${WRIST_SERIAL} are configured."
-  echo "The two chest cameras are excluded."
+  echo "Primary ${PRIMARY_CAMERA_ROLE}=${HEAD_SERIAL}; right_wrist=${WRIST_SERIAL}."
+  echo "Every other installed camera is excluded from this dataset profile."
 }
 
 start_cameras() {
@@ -233,6 +248,7 @@ start_cameras() {
   start_component cameras \
     nice -n 5 taskset -c "${BACKGROUND_CPU_LIST}" \
       ros2 launch one_arm_teleop_bridge dataset_cameras.launch.py \
+      primary_camera_name:="${PRIMARY_CAMERA_NAME}" \
       head_serial:="${HEAD_SERIAL}" \
       wrist_serial:="${WRIST_SERIAL}"
   if ! wait_for_topic_publisher "${HEAD_TOPIC}" 25 ||
@@ -242,7 +258,8 @@ start_cameras() {
     return 9
   fi
   if ! python3 "${PROJECT_ROOT}/tools/check_camera_fps.py" \
-      --duration 6 --warmup 1; then
+      --duration 6 --warmup 1 \
+      --topic "${HEAD_TOPIC}" --topic "${WRIST_TOPIC}"; then
     tail -n 80 "$(component_log_file cameras)" >&2 || true
     stop_component_group cameras || true
     return 9
@@ -306,6 +323,7 @@ start_recording() {
       --storage sqlite3 \
       --head-topic "${HEAD_TOPIC}" \
       --wrist-topic "${WRIST_TOPIC}" \
+      --primary-camera-feature "${PRIMARY_CAMERA_FEATURE}" \
       --output-root "${RAW_ROOT}" \
       --episode-path-file "${EPISODE_PATH_FILE}"
 
@@ -445,7 +463,8 @@ PY
       --repo-id "${repo_id}" \
       --fps 30 \
       --head-topic "${HEAD_TOPIC}" \
-      --wrist-topic "${WRIST_TOPIC}"
+      --wrist-topic "${WRIST_TOPIC}" \
+      --primary-camera-feature "${PRIMARY_CAMERA_FEATURE}"
   ) 9>"${RUNTIME_DIR}/lerobot_export.lock"
   echo "LEROBOT_EPISODE_EXPORTED"
   echo "LEROBOT_DATASET=${LEROBOT_ROOT}"

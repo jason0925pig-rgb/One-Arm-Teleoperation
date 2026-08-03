@@ -75,6 +75,16 @@ class FeatureSchemaTests(unittest.TestCase):
             ["height", "width", "channels"],
         )
 
+    def test_schema_can_name_the_primary_camera_chest(self) -> None:
+        features = _feature_schema(
+            (720, 1280, 3),
+            (720, 1280, 3),
+            "observation.images.chest",
+        )
+        self.assertIn("observation.images.chest", features)
+        self.assertNotIn("observation.images.head", features)
+        self.assertIn("observation.images.wrist_right", features)
+
     def test_schema_allows_lerobot_generated_bookkeeping_features(self) -> None:
         expected = _feature_schema((720, 1280, 3), (720, 1280, 3))
         current = dict(expected)

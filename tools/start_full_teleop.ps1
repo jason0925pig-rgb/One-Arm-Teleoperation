@@ -13,6 +13,7 @@ param(
     [string]$UbuntuDatasetDataRoot = "",
     [string]$UbuntuHeadSerial = "",
     [string]$UbuntuWristSerial = "",
+    [string]$UbuntuPrimaryCameraRole = "",
     [string]$SshIdentityFile = "$env:USERPROFILE\.ssh\one_arm_teleop_ed25519",
     [ValidateRange(1.0, 100.0)]
     [double]$RateHz = 100.0,
@@ -34,8 +35,9 @@ $profileDefaults = if ($DeploymentProfile -eq "new-humble") {
         UbuntuOrbbecSetup = "/home/nvidia/work/camera_336l/install/setup.bash"
         UbuntuLerobotPython = "/home/nvidia/.venvs/onearm-lerobot/bin/python"
         UbuntuDatasetDataRoot = "/home/nvidia/work/telop/onearm_Tele"
-        UbuntuHeadSerial = "UNCONFIGURED_NEW_HEAD"
-        UbuntuWristSerial = "UNCONFIGURED_NEW_WRIST"
+        UbuntuHeadSerial = "CP8284100034"
+        UbuntuWristSerial = "CPCD75300083"
+        UbuntuPrimaryCameraRole = "chest"
     }
 }
 else {
@@ -53,6 +55,7 @@ else {
         )
         UbuntuHeadSerial = "CPCD7530003J"
         UbuntuWristSerial = "CPCBC5300077"
+        UbuntuPrimaryCameraRole = "head"
     }
 }
 foreach ($name in $profileDefaults.Keys) {
@@ -210,6 +213,9 @@ function Get-RemoteEnvironmentPrefix {
     if (-not [string]::IsNullOrWhiteSpace($UbuntuWristSerial)) {
         $pairs["ONE_ARM_WRIST_SERIAL"] = $UbuntuWristSerial
     }
+    if (-not [string]::IsNullOrWhiteSpace($UbuntuPrimaryCameraRole)) {
+        $pairs["ONE_ARM_PRIMARY_CAMERA_ROLE"] = $UbuntuPrimaryCameraRole
+    }
     if ($pairs.Count -eq 0) {
         return ""
     }
@@ -277,7 +283,7 @@ Write-Host "Ubuntu project    : $UbuntuProject"
 Write-Host "ZLink2 port       : $ComPort"
 Write-Host "Task              : $Task"
 Write-Host "Dataset repo id   : $DatasetRepoId"
-Write-Host "Head camera SN    : $UbuntuHeadSerial"
+Write-Host "Primary camera    : $UbuntuPrimaryCameraRole / $UbuntuHeadSerial"
 Write-Host "Wrist camera SN   : $UbuntuWristSerial"
 if (-not [string]::IsNullOrWhiteSpace($UbuntuDatasetDataRoot)) {
     Write-Host "Dataset root      : $UbuntuDatasetDataRoot"

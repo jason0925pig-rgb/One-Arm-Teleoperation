@@ -28,6 +28,7 @@ DEFAULT_GRIPPER_FEEDBACK_VALID_TOPIC = (
 DEFAULT_GRIPPER_CONTACT_TOPIC = "/right_arm/gripper_contact"
 DEFAULT_HEAD_TOPIC = "/camera_head/color/image_raw/compressed"
 DEFAULT_WRIST_TOPIC = "/camera_wrist/color/image_raw/compressed"
+DEFAULT_PRIMARY_CAMERA_FEATURE = "observation.images.head"
 
 
 @dataclass
@@ -389,6 +390,7 @@ def _summarize_skews(values_ns: Sequence[int]) -> dict[str, float]:
 def _feature_schema(
     head_shape: tuple[int, int, int],
     wrist_shape: tuple[int, int, int],
+    primary_camera_feature: str = DEFAULT_PRIMARY_CAMERA_FEATURE,
 ) -> dict[str, dict[str, Any]]:
     return {
         "observation.state": {
@@ -411,7 +413,7 @@ def _feature_schema(
             "shape": (1,),
             "names": ["right_gripper_position_feedback_valid"],
         },
-        "observation.images.head": {
+        primary_camera_feature: {
             "dtype": "video",
             "shape": head_shape,
             "names": ["height", "width", "channels"],
@@ -513,6 +515,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--head-topic", default=DEFAULT_HEAD_TOPIC)
     parser.add_argument("--wrist-topic", default=DEFAULT_WRIST_TOPIC)
+    parser.add_argument(
+        "--primary-camera-feature",
+        choices=("observation.images.head", "observation.images.chest"),
+        default=DEFAULT_PRIMARY_CAMERA_FEATURE,
+    )
     parser.add_argument("--max-state-skew-ms", type=float, default=75.0)
     parser.add_argument("--max-action-skew-ms", type=float, default=60.0)
     parser.add_argument("--max-camera-skew-ms", type=float, default=50.0)
@@ -688,12 +695,13 @@ def main() -> int:
         streams[args.wrist_topic].type_name,
     )
     if first_head.ndim != 3 or first_head.shape[2] != 3:
-        raise SystemExit(f"invalid head RGB shape: {first_head.shape}")
+        raise SystemExit(f"invalid primary RGB shape: {first_head.shape}")
     if first_wrist.ndim != 3 or first_wrist.shape[2] != 3:
         raise SystemExit(f"invalid wrist RGB shape: {first_wrist.shape}")
     features = _feature_schema(
         tuple(int(item) for item in first_head.shape),
         tuple(int(item) for item in first_wrist.shape),
+        args.primary_camera_feature,
     )
     quality = {
         "format": "one_arm_lerobot_export_report",
@@ -715,6 +723,7 @@ def main() -> int:
             "separately because CTAG2F120 readback is not yet trustworthy"
         ),
         "camera_duplicate_ratio": duplicate_ratios,
+        "primary_camera_feature": args.primary_camera_feature,
         "sample_skew": {
             topic: _summarize_skews(
                 [item.skew_ns for item in selected]
@@ -824,10 +833,10 @@ def main() -> int:
                 selectors[args.wrist_topic][frame_index],
             )
             if tuple(head.shape) != tuple(features[
-                "observation.images.head"
+                args.primary_camera_feature
             ]["shape"]):
                 raise ValueError(
-                    f"head image shape changed at frame {frame_index}: "
+                    f"primary image shape changed at frame {frame_index}: "
                     f"{head.shape}"
                 )
             if tuple(wrist.shape) != tuple(features[
@@ -848,7 +857,7 @@ def main() -> int:
                     "observation.gripper_feedback_valid": np.asarray(
                         [_bool_float(feedback_message)], dtype=np.float32
                     ),
-                    "observation.images.head": head,
+                    args.primary_camera_feature: head,
                     "observation.images.wrist_right": wrist,
                 }
             )
