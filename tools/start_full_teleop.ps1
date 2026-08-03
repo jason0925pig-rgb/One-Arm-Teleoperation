@@ -79,6 +79,7 @@ foreach ($name in $profileDefaults.Keys) {
 $script:RemoteStackStarted = $false
 $script:SenderProcess = $null
 $script:ReadyFile = $null
+$script:SenderSessionPathFile = $null
 $script:NormalSenderExit = $false
 $script:LaunchFailed = $false
 $script:DatasetCaptureStarted = $false
@@ -189,6 +190,33 @@ function Stop-DatasetCapture {
         )
     }
     $script:DatasetCaptureStarted = $false
+}
+
+function Remove-WindowsSenderSession {
+    if (
+        $null -eq $script:SenderSessionPathFile -or
+        -not (Test-Path -LiteralPath $script:SenderSessionPathFile -PathType Leaf)
+    ) {
+        throw "Windows sender did not report its session directory."
+    }
+    $reported = (Get-Content -LiteralPath $script:SenderSessionPathFile -Raw).Trim()
+    if ([string]::IsNullOrWhiteSpace($reported)) {
+        throw "Windows sender reported an empty session directory."
+    }
+    $recordingsRoot = [IO.Path]::GetFullPath((Join-Path $repoRoot "recordings"))
+    $sessionDirectory = [IO.Path]::GetFullPath($reported)
+    if (
+        [IO.Path]::GetDirectoryName($sessionDirectory) -ne $recordingsRoot -or
+        -not (Test-Path -LiteralPath $sessionDirectory -PathType Container)
+    ) {
+        throw "Refusing to discard unexpected Windows path: $sessionDirectory"
+    }
+    $item = Get-Item -LiteralPath $sessionDirectory -Force
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Refusing to discard a reparse-point session: $sessionDirectory"
+    }
+    Remove-Item -LiteralPath $sessionDirectory -Recurse -Force
+    Write-Host "WINDOWS_SENDER_SESSION_DISCARDED=$sessionDirectory"
 }
 
 function ConvertTo-Utf8Base64 {
@@ -306,8 +334,14 @@ $remoteEnvironment = Get-RemoteEnvironmentPrefix
 $script:ReadyFile = Join-Path `
     ([System.IO.Path]::GetTempPath()) `
     ("one_arm_teleop_ready_{0}.flag" -f $PID)
+$script:SenderSessionPathFile = Join-Path `
+    ([System.IO.Path]::GetTempPath()) `
+    ("one_arm_teleop_sender_session_{0}.txt" -f $PID)
 if (Test-Path -LiteralPath $script:ReadyFile) {
     Remove-Item -LiteralPath $script:ReadyFile -Force
+}
+if (Test-Path -LiteralPath $script:SenderSessionPathFile) {
+    Remove-Item -LiteralPath $script:SenderSessionPathFile -Force
 }
 
 Write-Host "============================================================"
@@ -381,6 +415,7 @@ try {
         "--udp-bind-host", $windowsSourceIp,
         "--deadman",
         "--activation-file", $script:ReadyFile,
+        "--session-path-file", $script:SenderSessionPathFile,
         "--session-name", $SessionName
     )
     $quotedArguments = foreach ($argument in $arguments) {
@@ -462,10 +497,11 @@ finally {
 
 if ($script:EpisodeRecordingStarted) {
     $outcome = "failure"
+    $userDiscardRequested = $false
     if ($script:NormalSenderExit -and -not $script:LaunchFailed) {
         while ($true) {
             $answer = (
-                Read-Host "Episode outcome: S=success, F=failure"
+                Read-Host "Episode outcome: S=save, F=discard and delete"
             ).Trim().ToLowerInvariant()
             if ($answer -in @("s", "success")) {
                 $outcome = "success"
@@ -473,6 +509,7 @@ if ($script:EpisodeRecordingStarted) {
             }
             if ($answer -in @("f", "failure")) {
                 $outcome = "failure"
+                $userDiscardRequested = $true
                 break
             }
             Write-Host "Please enter S or F."
@@ -481,21 +518,48 @@ if ($script:EpisodeRecordingStarted) {
     else {
         Write-Host (
             "The session did not end normally; it will be marked failure " +
-            "and kept only as a raw diagnostic episode."
+            "and kept only as a raw diagnostic episode. Pressing F after a " +
+            "normal run is the action that deletes an episode."
         )
     }
     try {
-        Invoke-CheckedSsh `
-            "cd $remoteProject && ${remoteEnvironment}bash tools/ubuntu_dataset_episode.sh finalize '$outcome' '$DatasetRepoId'"
+        if ($userDiscardRequested) {
+            Invoke-CheckedSsh `
+                "cd $remoteProject && ${remoteEnvironment}bash tools/ubuntu_dataset_episode.sh discard"
+            Remove-WindowsSenderSession
+            Write-Host "EPISODE_DISCARDED_NO_DATA_KEPT"
+        }
+        else {
+            Invoke-CheckedSsh `
+                "cd $remoteProject && ${remoteEnvironment}bash tools/ubuntu_dataset_episode.sh finalize '$outcome' '$DatasetRepoId'"
+        }
     }
     catch {
         $script:LaunchFailed = $true
         Write-Host ""
-        Write-Host (
-            "DATASET FINALIZATION ERROR: " + $_.Exception.Message
-        ) -ForegroundColor Red
-        Write-Host "The raw ROS bag was preserved and can be exported later."
+        if ($userDiscardRequested) {
+            Write-Host (
+                "EPISODE DISCARD ERROR: " + $_.Exception.Message
+            ) -ForegroundColor Red
+            Write-Host (
+                "Discard was not fully confirmed. Inspect both the Ubuntu " +
+                "episode path and the Windows recordings directory."
+            )
+        }
+        else {
+            Write-Host (
+                "DATASET FINALIZATION ERROR: " + $_.Exception.Message
+            ) -ForegroundColor Red
+            Write-Host "The raw ROS bag was preserved and can be exported later."
+        }
     }
+}
+
+if (
+    $null -ne $script:SenderSessionPathFile -and
+    (Test-Path -LiteralPath $script:SenderSessionPathFile)
+) {
+    Remove-Item -LiteralPath $script:SenderSessionPathFile -Force
 }
 
 if ($script:LaunchFailed -or -not $script:NormalSenderExit) {

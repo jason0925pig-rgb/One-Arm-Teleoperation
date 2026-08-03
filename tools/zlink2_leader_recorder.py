@@ -74,6 +74,13 @@ def write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
     temporary.replace(path)
 
 
+def write_text_atomic(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(text, encoding="utf-8")
+    temporary.replace(path)
+
+
 def safe_session_name(text: str) -> str:
     value = re.sub(r"[^A-Za-z0-9_-]+", "_", text.strip()).strip("_")
     return value[:60] or "leader_session"
@@ -690,6 +697,8 @@ def record_session(
     )
 
     session_dir = unique_session_directory(args.output_root, args.session_name)
+    if args.session_path_file is not None:
+        write_text_atomic(args.session_path_file, str(session_dir))
     csv_path = session_dir / "frames.csv"
     metadata_path = session_dir / "metadata.json"
     metadata = initial_metadata(
@@ -1021,6 +1030,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="seconds between redundant STOP datagrams (default: 0.02)",
     )
     parser.add_argument("--session-name", default="leader_session")
+    parser.add_argument(
+        "--session-path-file",
+        type=Path,
+        help=(
+            "optional file receiving the exact created session directory; "
+            "used by the full launcher to discard a failed episode safely"
+        ),
+    )
     parser.add_argument("--task", default="")
     parser.add_argument("--operator", default="")
     parser.add_argument("--notes", default="")
@@ -1105,6 +1122,8 @@ def main() -> int:
     args.output_root = args.output_root.expanduser().resolve()
     if args.activation_file is not None:
         args.activation_file = args.activation_file.expanduser().resolve()
+    if args.session_path_file is not None:
+        args.session_path_file = args.session_path_file.expanduser().resolve()
 
     try:
         labels, ids_by_label, mapping_raw = load_mapping(mapping_path)

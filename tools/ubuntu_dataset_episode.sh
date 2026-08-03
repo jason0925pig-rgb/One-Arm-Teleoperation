@@ -518,6 +518,42 @@ PY
   echo "LEROBOT_DATASET=${LEROBOT_ROOT}"
 }
 
+discard_episode() {
+  local episode_dir
+  local episode_real
+  local raw_root_real
+  [[ -s "${EPISODE_PATH_FILE}" ]] || {
+    echo "ERROR: no completed episode path is available to discard." >&2
+    return 10
+  }
+  if component_alive recorder; then
+    echo "ERROR: refusing to discard while the recorder is still running." >&2
+    return 13
+  fi
+  episode_dir="$(<"${EPISODE_PATH_FILE}")"
+  [[ -d "${episode_dir}" ]] || {
+    echo "ERROR: episode directory is missing: ${episode_dir}" >&2
+    return 10
+  }
+  raw_root_real="$(realpath -e "${RAW_ROOT}")"
+  episode_real="$(realpath -e "${episode_dir}")"
+  [[ "$(dirname "${episode_real}")" == "${raw_root_real}" ]] || {
+    echo "ERROR: refusing to discard path outside raw root: ${episode_real}" >&2
+    return 14
+  }
+  [[ "$(basename "${episode_real}")" =~ ^[0-9]{8}_[0-9]{6}_[A-Za-z0-9_-]+$ ]] || {
+    echo "ERROR: refusing unexpected episode directory name: ${episode_real}" >&2
+    return 14
+  }
+  if pgrep -af "export_rosbag_to_lerobot.py.*--episode-dir[[:space:]]+${episode_real}" >/dev/null; then
+    echo "ERROR: refusing to discard while this episode is exporting." >&2
+    return 13
+  fi
+  rm -rf -- "${episode_real}"
+  rm -f -- "${EPISODE_PATH_FILE}"
+  echo "EPISODE_DISCARDED=${episode_real}"
+}
+
 show_status() {
   local name
   echo "DATA_ROOT=${DATA_ROOT}"
@@ -558,11 +594,18 @@ case "${ACTION}" in
     }
     finalize_episode "$2" "$3"
     ;;
+  discard)
+    [[ $# -eq 1 ]] || {
+      echo "Usage: $0 discard" >&2
+      exit 2
+    }
+    discard_episode
+    ;;
   status)
     show_status
     ;;
   *)
-    echo "Usage: $0 {preflight|start|record-start|stop|finalize|status}" >&2
+    echo "Usage: $0 {preflight|start|record-start|stop|finalize|discard|status}" >&2
     exit 2
     ;;
 esac
