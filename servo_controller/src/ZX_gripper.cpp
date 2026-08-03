@@ -1,6 +1,8 @@
 // #include "../include/ZX_gripper.h"
 #include "ZX_gripper.h"
+#include <cerrno>
 #include <cmath>
+#include <cstring>
 #include <iostream>
 
 ZX_gripper::ZX_gripper(const char *port, int slave_id, int baudrate, float timeout)
@@ -37,8 +39,12 @@ ZX_gripper::ZX_gripper(const char *port, int slave_id, int baudrate, float timeo
     // Connect
     if (modbus_connect(ctx) == -1)
     {
+        const int connect_errno = errno;
+        const std::string detail = std::strerror(connect_errno);
         modbus_free(ctx);
-        throw std::runtime_error("Modbus connection failed");
+        throw std::runtime_error(
+            "Modbus connection failed for " + std::string(port) +
+            ": errno=" + std::to_string(connect_errno) + " (" + detail + ")");
     }
 }
 

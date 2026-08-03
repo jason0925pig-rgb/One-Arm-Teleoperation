@@ -72,6 +72,15 @@ errno_t Robot::disable_robot() {
         return jaka_robot_.disable_robot();
 }
 
+errno_t Robot::drag_mode_enable(BOOL enable) {
+    if (sim_mode_) {
+        std::cout << "[sim mode]::drag mode "
+                  << (enable ? "enable" : "disable") << std::endl;
+        return 0;
+    }
+    return jaka_robot_.drag_mode_enable(enable);
+}
+
 errno_t Robot::set_user_frame_id(int id) {      
     if (sim_mode_){
         std::cout << "[sim mode]::set user frame id" << std::endl;

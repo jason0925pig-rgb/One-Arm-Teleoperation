@@ -34,6 +34,8 @@ public:
             declare_parameter<bool>("hardware_power_authorized", false);
         hardware_enable_authorized_ =
             declare_parameter<bool>("hardware_enable_authorized", false);
+        hardware_drag_authorized_ =
+            declare_parameter<bool>("hardware_drag_authorized", false);
         hardware_motion_authorized_ =
             declare_parameter<bool>("hardware_motion_authorized", false);
         limits_configured_ = declare_parameter<bool>("limits_configured", false);
@@ -117,6 +119,13 @@ public:
                 this,
                 std::placeholders::_1,
                 std::placeholders::_2));
+        drag_service_ = create_service<std_srvs::srv::SetBool>(
+            prefix + "/set_drag_enabled",
+            std::bind(
+                &SafeOneArmServo::set_drag_enabled,
+                this,
+                std::placeholders::_1,
+                std::placeholders::_2));
         motion_service_ = create_service<std_srvs::srv::SetBool>(
             prefix + "/set_motion_enabled",
             std::bind(
@@ -182,6 +191,21 @@ public:
     }
 
     ~SafeOneArmServo() override {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (
+                connected_ && !dry_run_ &&
+                (drag_mode_requested_ || robot_drag_status_ != 0)) {
+                const errno_t result = robot_.drag_mode_enable(FALSE);
+                if (result != ERR_SUCC) {
+                    RCLCPP_ERROR(
+                        get_logger(),
+                        "Failed to exit drag mode during node shutdown, error=%d",
+                        result);
+                }
+            }
+            drag_mode_requested_ = false;
+        }
         disarm("node shutdown");
         if (sdk_session_open_) {
             robot_.login_out();
@@ -325,10 +349,13 @@ private:
         }
 
         if (!request->data) {
-            if (motion_enabled_ || servo_mode_entered_ || robot_enabled_) {
+            if (
+                motion_enabled_ || servo_mode_entered_ || robot_enabled_ ||
+                drag_mode_requested_ || robot_drag_status_ != 0) {
                 response->success = false;
                 response->message =
-                    "refusing power_off while servo, motion, or robot enable is active";
+                    "refusing power_off while drag, servo, motion, or robot "
+                    "enable is active";
                 return;
             }
             if (!robot_powered_on_) {
@@ -440,6 +467,17 @@ private:
                     "SDK did not confirm servo-mode exit; robot disable was not sent";
                 return;
             }
+            if (drag_mode_requested_ || robot_drag_status_ != 0) {
+                const errno_t drag_result = robot_.drag_mode_enable(FALSE);
+                if (drag_result != ERR_SUCC) {
+                    response->success = false;
+                    response->message =
+                        "failed to exit drag mode before robot disable, error=" +
+                        std::to_string(drag_result);
+                    return;
+                }
+                drag_mode_requested_ = false;
+            }
             if (!robot_enabled_) {
                 response->success = true;
                 response->message = "robot is already disabled";
@@ -515,6 +553,105 @@ private:
             "motion call was made.");
     }
 
+    void set_drag_enabled(
+        const std::shared_ptr<std_srvs::srv::SetBool::Request> request,
+        std::shared_ptr<std_srvs::srv::SetBool::Response> response) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!request->data) {
+            if (dry_run_) {
+                drag_mode_requested_ = false;
+                response->success = true;
+                response->message =
+                    "dry-run drag disable accepted; no hardware call was made";
+                return;
+            }
+            if (!connected_) {
+                response->success = false;
+                response->message = "robot is not connected";
+                return;
+            }
+            if (!drag_mode_requested_ && robot_drag_status_ == 0) {
+                response->success = true;
+                response->message = "robot is already outside drag mode";
+                return;
+            }
+            const errno_t result = robot_.drag_mode_enable(FALSE);
+            if (result != ERR_SUCC) {
+                response->success = false;
+                response->message =
+                    "failed to exit drag mode, error=" + std::to_string(result);
+                return;
+            }
+            drag_mode_requested_ = false;
+            response->success = true;
+            response->message =
+                "drag disable accepted; verify robot_drag_status=0";
+            RCLCPP_WARN(get_logger(), "Operator requested drag mode off.");
+            return;
+        }
+
+        if (!connected_) {
+            response->success = false;
+            response->message = "robot is not connected";
+            return;
+        }
+        if (!hardware_drag_authorized_) {
+            response->success = false;
+            response->message =
+                "hardware_drag_authorized is false; drag mode is locked";
+            return;
+        }
+        if (dry_run_) {
+            drag_mode_requested_ = true;
+            response->success = true;
+            response->message =
+                "dry-run drag enable accepted; no hardware call was made";
+            return;
+        }
+        const auto feedback_age = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - last_feedback_received_).count();
+        if (!feedback_valid_ || feedback_age > feedback_timeout_seconds_) {
+            response->success = false;
+            response->message =
+                "no recent valid robot status; refusing drag mode";
+            return;
+        }
+        if (
+            !robot_socket_connected_ || !robot_powered_on_ || !robot_enabled_ ||
+            robot_emergency_stop_ || robot_protective_stop_ ||
+            robot_on_soft_limit_ || robot_error_code_ != 0) {
+            response->success = false;
+            response->message = "robot status is not safe for drag mode";
+            return;
+        }
+        if (motion_enabled_ || servo_mode_entered_) {
+            response->success = false;
+            response->message =
+                "motion/servo mode must be disabled before drag mode";
+            return;
+        }
+        if (drag_mode_requested_ || robot_drag_status_ != 0) {
+            response->success = true;
+            response->message = "robot is already in drag mode";
+            return;
+        }
+        const errno_t result = robot_.drag_mode_enable(TRUE);
+        if (result != ERR_SUCC) {
+            response->success = false;
+            response->message =
+                "failed to enter drag mode, error=" + std::to_string(result);
+            return;
+        }
+        drag_mode_requested_ = true;
+        response->success = true;
+        response->message =
+            "drag enable accepted; verify robot_drag_status=1";
+        RCLCPP_WARN(
+            get_logger(),
+            "Operator enabled drag mode. Keep clear of the arm and support "
+            "the payload while repositioning.");
+    }
+
     void set_motion_enabled(
         const std::shared_ptr<std_srvs::srv::SetBool::Request> request,
         std::shared_ptr<std_srvs::srv::SetBool::Response> response) {
@@ -571,6 +708,12 @@ private:
             response->message =
                 "robot status is not safe for servo mode "
                 "(power/enable/e-stop/protective-stop)";
+            return;
+        }
+        if (!dry_run_ && (drag_mode_requested_ || robot_drag_status_ != 0)) {
+            response->success = false;
+            response->message =
+                "drag mode must be disabled before servo motion";
             return;
         }
         for (std::size_t index = 0; index < kJointCount; ++index) {
@@ -1001,6 +1144,7 @@ private:
              << ";dry_run=" << dry_run_
              << ";hardware_power_authorized=" << hardware_power_authorized_
              << ";hardware_enable_authorized=" << hardware_enable_authorized_
+             << ";hardware_drag_authorized=" << hardware_drag_authorized_
              << ";hardware_motion_authorized=" << hardware_motion_authorized_
             << ";connected=" << connected_
             << ";sdk_session_open=" << sdk_session_open_
@@ -1014,6 +1158,7 @@ private:
             << ";robot_socket_connected=" << robot_socket_connected_
             << ";robot_error_code=" << robot_error_code_
             << ";robot_drag_status=" << robot_drag_status_
+            << ";drag_mode_requested=" << drag_mode_requested_
              << ";limits_configured=" << safety_configuration_valid_
              << ";motion_enabled=" << motion_enabled_
              << ";servo_mode_entered=" << servo_mode_entered_
@@ -1037,6 +1182,7 @@ private:
     bool dry_run_{true};
     bool hardware_power_authorized_{false};
     bool hardware_enable_authorized_{false};
+    bool hardware_drag_authorized_{false};
     bool hardware_motion_authorized_{false};
     bool limits_configured_{false};
     bool safety_configuration_valid_{false};
@@ -1056,6 +1202,7 @@ private:
     bool robot_socket_connected_{false};
     bool motion_enabled_{false};
     bool servo_mode_entered_{false};
+    bool drag_mode_requested_{false};
     bool has_target_{false};
     int robot_error_code_{0};
     int robot_drag_status_{0};
@@ -1098,6 +1245,7 @@ private:
     rclcpp::Publisher<std_msgs::msg::String>::SharedPtr status_pub_;
     rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr power_service_;
     rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr enable_service_;
+    rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr drag_service_;
     rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr motion_service_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reconnect_service_;
     rclcpp::TimerBase::SharedPtr control_timer_;

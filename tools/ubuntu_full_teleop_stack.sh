@@ -235,6 +235,14 @@ known_conflicts() {
     return 1
   fi
   real_device="$(readlink -f "${GRIPPER_DEVICE}")"
+  if [[ ! -r "${real_device}" || ! -w "${real_device}" ]]; then
+    echo "ERROR: CTAG2F120 serial device is not readable/writable by user ${USER}: ${real_device}" >&2
+    echo "Run once: sudo usermod -aG dialout ${USER}" >&2
+    echo "Then log out of every SSH session and log in again (or reboot)." >&2
+    ls -l "${real_device}" >&2 || true
+    id >&2 || true
+    return 1
+  fi
   owners="$(fuser "${real_device}" 2>/dev/null || true)"
   if [[ -n "${owners//[[:space:]]/}" ]]; then
     echo "ERROR: CTAG2F120 serial device is busy: ${real_device}" >&2

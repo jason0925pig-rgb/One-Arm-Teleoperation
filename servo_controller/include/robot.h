@@ -56,6 +56,7 @@ class Robot {
         errno_t power_off();
         errno_t enable_robot();
         errno_t disable_robot();
+        errno_t drag_mode_enable(BOOL enable);
 
         errno_t set_user_frame_id(int id);
         errno_t clear_error();
