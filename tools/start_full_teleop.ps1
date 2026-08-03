@@ -15,6 +15,9 @@ param(
     [string]$UbuntuWristSerial = "",
     [string]$UbuntuPrimaryCameraRole = "",
     [string]$UbuntuGripperDevice = "",
+    [ValidateRange(1024, 65535)]
+    [int]$CameraPreviewPort = 8088,
+    [switch]$NoCameraPreview,
     [string]$SshIdentityFile = "$env:USERPROFILE\.ssh\one_arm_teleop_ed25519",
     [ValidateRange(1.0, 100.0)]
     [double]$RateHz = 100.0,
@@ -225,6 +228,9 @@ function Get-RemoteEnvironmentPrefix {
     if (-not [string]::IsNullOrWhiteSpace($UbuntuGripperDevice)) {
         $pairs["ONE_ARM_GRIPPER_DEVICE"] = $UbuntuGripperDevice
     }
+    $pairs["ONE_ARM_CAMERA_PREVIEW_PORT"] = $CameraPreviewPort.ToString(
+        [System.Globalization.CultureInfo]::InvariantCulture
+    )
     if ($pairs.Count -eq 0) {
         return ""
     }
@@ -245,6 +251,7 @@ $targetParts = $UbuntuUdpTarget -split ":", 2
 if ($targetParts.Count -ne 2) {
     throw "UbuntuUdpTarget must be HOST:PORT."
 }
+$cameraPreviewUrl = "http://$($targetParts[0]):$CameraPreviewPort/"
 if ([string]::IsNullOrWhiteSpace($RequiredWindowsSourceIp)) {
     $windowsSourceIp = Get-UdpSourceAddress -Target $UbuntuUdpTarget
 }
@@ -294,6 +301,7 @@ Write-Host "Task              : $Task"
 Write-Host "Dataset repo id   : $DatasetRepoId"
 Write-Host "Primary camera    : $UbuntuPrimaryCameraRole / $UbuntuHeadSerial"
 Write-Host "Wrist camera SN   : $UbuntuWristSerial"
+Write-Host "Camera preview    : $cameraPreviewUrl"
 Write-Host "Gripper device    : $UbuntuGripperDevice"
 if (-not [string]::IsNullOrWhiteSpace($UbuntuDatasetDataRoot)) {
     Write-Host "Dataset root      : $UbuntuDatasetDataRoot"
@@ -308,6 +316,25 @@ try {
     $script:DatasetCaptureStarted = $true
     Invoke-CheckedSsh `
         "cd $remoteProject && ${remoteEnvironment}bash tools/ubuntu_dataset_episode.sh start"
+
+    if (-not $NoCameraPreview) {
+        Write-Host "Opening the two-camera preview (chest left / right wrist right)..."
+        $edgeCandidates = @(
+            "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe",
+            "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe"
+        )
+        $edgePath = $edgeCandidates |
+            Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+            Select-Object -First 1
+        if ($null -ne $edgePath) {
+            Start-Process `
+                -FilePath $edgePath `
+                -ArgumentList @("--new-window", $cameraPreviewUrl) | Out-Null
+        }
+        else {
+            Start-Process $cameraPreviewUrl | Out-Null
+        }
+    }
 
     Write-Host ""
     Write-Host "Stage 1 starts ROS 2 robot interfaces only. The robot will NOT move."
@@ -369,7 +396,8 @@ exit $LASTEXITCODE
 
     Write-Host ""
     Write-Host "Stage 2 is waiting for Enter/baseline, fresh UDP preview, and robot checks."
-    Write-Host "After these checks, the robot WILL be powered, enabled, and put in servo mode,"
+    Write-Host "After these checks, the robot WILL be powered and enabled; the follower gripper"
+    Write-Host "will first open to 2000, then the arm enters servo mode,"
     Write-Host "but it still receives no motion target until you press Space."
     Invoke-CheckedSsh `
         "cd $remoteProject && ${remoteEnvironment}bash tools/ubuntu_full_teleop_stack.sh arm"

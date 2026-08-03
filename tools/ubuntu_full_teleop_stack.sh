@@ -140,6 +140,56 @@ wait_status_fields() {
   return 1
 }
 
+wait_gripper_fields() {
+  local timeout_seconds="$1"
+  shift
+  local deadline=$((SECONDS + timeout_seconds))
+  local output=""
+  local expected=""
+  local all_present=0
+  while (( SECONDS < deadline )); do
+    output="$(topic_once /right_arm/gripper_status 2 || true)"
+    if [[ -n "${output}" ]]; then
+      all_present=1
+      for expected in "$@"; do
+        if ! grep -Fq "${expected}" <<<"${output}"; then
+          all_present=0
+          break
+        fi
+      done
+      if (( all_present != 0 )); then
+        printf '%s\n' "${output}"
+        return 0
+      fi
+    fi
+    sleep 0.20
+  done
+  echo "ERROR: no gripper-status sample contained all required fields: $*" >&2
+  [[ -n "${output}" ]] && printf '%s\n' "${output}" >&2
+  return 1
+}
+
+initialize_gripper_open() {
+  local output
+  echo "INITIAL_GRIPPER_OPENING: follower gripper will move to its configured open position."
+  output="$(
+    timeout 12 ros2 topic pub --once \
+      /right_arm/gripper_command std_msgs/msg/Bool '{data: true}' 2>&1
+  )" || {
+    printf '%s\n' "${output}" >&2
+    return 1
+  }
+  if ! wait_gripper_fields 8 \
+      "enabled=1" \
+      "moving=0" \
+      "requested_open=1" \
+      "position=2000" \
+      "contact=0"; then
+    return 1
+  fi
+  echo "INITIAL_GRIPPER_OPEN_CONFIRMED"
+}
+
 call_set_bool() {
   local service_name="$1"
   local value="$2"
@@ -449,6 +499,7 @@ arm_stack() {
   # competes for CPU time.
   if ! call_set_bool /teleop/set_enabled true ||
      ! call_set_bool /right_arm/set_gripper_enabled true ||
+     ! initialize_gripper_open ||
      ! call_set_bool /right_arm/set_motion_enabled true ||
      ! wait_status_field "motion_enabled=1" 10; then
     echo "ERROR: arming failed. Running ordered safety shutdown." >&2

@@ -40,6 +40,8 @@ WRIST_TOPIC="/camera_wrist/color/image_raw/compressed"
 HEAD_SERIAL="${ONE_ARM_HEAD_SERIAL:-CPCD7530003J}"
 WRIST_SERIAL="${ONE_ARM_WRIST_SERIAL:-CPCBC5300077}"
 BACKGROUND_CPU_LIST="${ONE_ARM_BACKGROUND_CPUS:-}"
+PREVIEW_BIND_HOST="${ONE_ARM_CAMERA_PREVIEW_BIND_HOST:-0.0.0.0}"
+PREVIEW_PORT="${ONE_ARM_CAMERA_PREVIEW_PORT:-8088}"
 
 mkdir -p "${RUNTIME_DIR}"
 
@@ -146,6 +148,37 @@ wait_for_topic_publisher() {
     sleep 0.25
   done
   echo "ERROR: no active publisher appeared for ${topic}" >&2
+  return 1
+}
+
+wait_for_preview() {
+  local timeout_seconds="${1:-15}"
+  local deadline=$((SECONDS + timeout_seconds))
+  while (( SECONDS < deadline )); do
+    if python3 - "http://127.0.0.1:${PREVIEW_PORT}/health" <<'PY'
+import json
+import sys
+import urllib.request
+
+try:
+    with urllib.request.urlopen(sys.argv[1], timeout=1.0) as response:
+        status = json.load(response)
+    raise SystemExit(0 if all(status[name]["frames"] > 0 for name in ("chest", "wrist")) else 1)
+except Exception:
+    raise SystemExit(1)
+PY
+    then
+      return 0
+    fi
+    if ! component_alive preview; then
+      echo "ERROR: dual-camera preview exited during startup." >&2
+      tail -n 80 "$(component_log_file preview)" >&2 || true
+      return 1
+    fi
+    sleep 0.25
+  done
+  echo "ERROR: dual-camera preview did not receive both image streams." >&2
+  tail -n 80 "$(component_log_file preview)" >&2 || true
   return 1
 }
 
@@ -264,7 +297,20 @@ start_cameras() {
     stop_component_group cameras || true
     return 9
   fi
+  start_component preview \
+    nice -n 10 taskset -c "${BACKGROUND_CPU_LIST}" \
+      python3 "${PROJECT_ROOT}/tools/dual_camera_preview_server.py" \
+      --host "${PREVIEW_BIND_HOST}" \
+      --port "${PREVIEW_PORT}" \
+      --chest-topic "${HEAD_TOPIC}" \
+      --wrist-topic "${WRIST_TOPIC}"
+  if ! wait_for_preview 15; then
+    stop_component_group preview || true
+    stop_component_group cameras || true
+    return 9
+  fi
   echo "DATASET_CAMERAS_READY_30FPS"
+  echo "CAMERA_PREVIEW_READY port=${PREVIEW_PORT} layout=chest-left,wrist-right"
 }
 
 wait_for_record_topics() {
@@ -389,6 +435,7 @@ stop_recorder() {
 stop_all() {
   local failed=0
   stop_recorder || failed=1
+  stop_component_group preview || failed=1
   stop_component_group cameras || failed=1
   if (( failed != 0 )); then
     return 1
@@ -403,6 +450,7 @@ archive_runtime_logs() {
   mkdir -p "${destination}"
   for source in \
     "${RUNTIME_DIR}/recorder.log" \
+    "${RUNTIME_DIR}/preview.log" \
     "${RUNTIME_DIR}/cameras.log" \
     "/tmp/one_arm_teleop_full_${UID}/arm.log" \
     "/tmp/one_arm_teleop_full_${UID}/gripper.log" \
@@ -473,7 +521,7 @@ PY
 show_status() {
   local name
   echo "DATA_ROOT=${DATA_ROOT}"
-  for name in cameras recorder; do
+  for name in cameras preview recorder; do
     if component_alive "${name}"; then
       echo "${name}: running pid=$(<"$(component_pid_file "${name}")")"
     else
