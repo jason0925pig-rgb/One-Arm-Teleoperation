@@ -32,7 +32,10 @@ $profileDefaults = if ($DeploymentProfile -eq "new-humble") {
         UbuntuUdpTarget = "192.168.2.170:5005"
         RequiredWindowsSourceIp = "192.168.2.130"
         UbuntuRosDistro = "humble"
-        UbuntuOrbbecSetup = "/home/nvidia/work/camera_336l/install/setup.bash"
+        # Use the Humble-packaged driver.  The custom camera_336l overlay was
+        # built against OpenCV 4.8 while Humble image_transport uses 4.5; the
+        # mixed ABI can crash a camera container when a viewer subscribes.
+        UbuntuOrbbecSetup = "/opt/ros/humble/setup.bash"
         UbuntuLerobotPython = "/home/nvidia/.venvs/onearm-lerobot/bin/python"
         UbuntuDatasetDataRoot = "/home/nvidia/work/telop/onearm_Tele"
         UbuntuHeadSerial = "CP8284100034"
