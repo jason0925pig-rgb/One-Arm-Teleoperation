@@ -9,6 +9,7 @@ import json
 import math
 import sqlite3
 import sys
+import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -532,6 +533,37 @@ def build_parser() -> argparse.ArgumentParser:
     # writer uses an unbounded queue, so a fast rosbag decoder can otherwise
     # retain thousands of decoded 720p frames and be killed by the OOM killer.
     parser.add_argument("--image-writer-threads", type=int, default=0)
+    parser.add_argument(
+        "--legacy-png-video-export",
+        action="store_true",
+        help=(
+            "write temporary PNG files before encoding video; intended only "
+            "as a compatibility fallback"
+        ),
+    )
+    parser.add_argument(
+        "--video-codec",
+        default="h264",
+        help="LeRobot streaming video codec (default: h264)",
+    )
+    parser.add_argument(
+        "--encoder-queue-maxsize",
+        type=int,
+        default=90,
+        help="bounded frames per camera waiting for streaming encoding",
+    )
+    parser.add_argument(
+        "--encoder-threads",
+        type=int,
+        default=4,
+        help="encoder threads per camera (default: 4)",
+    )
+    parser.add_argument(
+        "--progress-interval-seconds",
+        type=float,
+        default=5.0,
+        help="seconds between export progress/ETA messages",
+    )
     return parser
 
 
@@ -548,6 +580,10 @@ def _positive_milliseconds(args: argparse.Namespace) -> None:
         raise SystemExit("--max-camera-duplicate-ratio must be within 0..1")
     if args.minimum_frames <= 0 or args.image_writer_threads < 0:
         raise SystemExit("minimum frames must be positive and threads nonnegative")
+    if args.encoder_queue_maxsize <= 0 or args.encoder_threads <= 0:
+        raise SystemExit("encoder queue size and threads must be positive")
+    if args.progress_interval_seconds <= 0.0:
+        raise SystemExit("progress interval must be positive")
 
 
 def main() -> int:
@@ -754,6 +790,18 @@ def main() -> int:
             "Ubuntu export environment."
         ) from exc
 
+    streaming_encoding = not args.legacy_png_video_export
+    video_options = {
+        "vcodec": args.video_codec,
+        # PyAV is present and verified on the Jetson.  Select it explicitly so
+        # LeRobot does not probe the optional torchcodec decoder and print a
+        # misleading warning during an export that does not decode MP4 input.
+        "video_backend": "pyav",
+        "streaming_encoding": streaming_encoding,
+        "encoder_queue_maxsize": args.encoder_queue_maxsize,
+        "encoder_threads": args.encoder_threads,
+    }
+
     info_path = dataset_root / "meta" / "info.json"
     if info_path.exists():
         if hasattr(LeRobotDataset, "resume"):
@@ -761,6 +809,7 @@ def main() -> int:
                 repo_id=args.repo_id,
                 root=dataset_root,
                 image_writer_threads=args.image_writer_threads,
+                **video_options,
             )
         else:
             # LeRobot 0.4.x resumes an on-disk v3 dataset through the normal
@@ -770,6 +819,7 @@ def main() -> int:
                 repo_id=args.repo_id,
                 root=dataset_root,
                 batch_encoding_size=1,
+                **video_options,
             )
             if args.image_writer_threads:
                 dataset.start_image_writer(
@@ -792,6 +842,7 @@ def main() -> int:
             robot_type="armstrong_right_arm_ctag2f120",
             use_videos=True,
             image_writer_threads=args.image_writer_threads,
+            **video_options,
         )
 
     decode_cache: dict[str, tuple[int, np.ndarray] | None] = {
@@ -810,6 +861,8 @@ def main() -> int:
         decode_cache[topic] = (selected.index, image)
         return image
 
+    export_started = time.monotonic()
+    last_progress = export_started
     try:
         for frame_index in range(len(grid)):
             state_message = message_store.load(
@@ -882,6 +935,32 @@ def main() -> int:
                     "observation.images.wrist_right": wrist,
                 }
             )
+            if streaming_encoding:
+                dropped = sum(
+                    dataset._streaming_encoder._dropped_frames.values()
+                )
+                if dropped:
+                    raise RuntimeError(
+                        "streaming encoder dropped a frame; export aborted "
+                        "instead of creating a misaligned LeRobot episode"
+                    )
+            now = time.monotonic()
+            completed = frame_index + 1
+            if (
+                now - last_progress >= args.progress_interval_seconds
+                or completed == len(grid)
+            ):
+                elapsed = max(now - export_started, 1e-9)
+                rate = completed / elapsed
+                remaining = (len(grid) - completed) / max(rate, 1e-9)
+                print(
+                    "LEROBOT_EXPORT_PROGRESS "
+                    f"frames={completed}/{len(grid)} "
+                    f"percent={completed / len(grid):.1%} "
+                    f"rate={rate:.2f}fps eta={remaining:.1f}s",
+                    flush=True,
+                )
+                last_progress = now
         dataset.save_episode()
         dataset.finalize()
     except Exception:
@@ -897,6 +976,11 @@ def main() -> int:
     message_store.close()
 
     quality["status"] = "complete"
+    quality["video_export_mode"] = (
+        "streaming" if streaming_encoding else "legacy_png"
+    )
+    quality["video_codec"] = args.video_codec
+    quality["video_decode_backend"] = "pyav"
     quality["dataset_episode_index"] = int(dataset.num_episodes) - 1
     _write_report(report_path, quality)
     print(
