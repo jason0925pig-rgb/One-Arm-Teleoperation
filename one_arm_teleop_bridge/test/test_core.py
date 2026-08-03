@@ -12,6 +12,7 @@ from one_arm_teleop_bridge.core import (
     StopFrame,
     parse_leader_packet,
     parse_teleop_packet,
+    validate_session_packet_timestamp,
     validate_packet_timestamp,
 )
 
@@ -89,6 +90,51 @@ class ProtocolTests(unittest.TestCase):
             validate_packet_timestamp(now - 600_000_000, now, 0.5, 0.25)
         with self.assertRaises(PacketError):
             validate_packet_timestamp(now + 300_000_000, now, 0.5, 0.25)
+
+    def test_session_timestamp_ignores_fixed_wall_clock_offset(self):
+        sender_origin = 1_000_000_000
+        receiver_origin = 681_000_000_000
+        self.assertAlmostEqual(
+            validate_session_packet_timestamp(
+                sender_origin + 100_000_000,
+                sender_origin,
+                receiver_origin + 120_000_000,
+                receiver_origin,
+                0.5,
+                0.25,
+            ),
+            0.02,
+        )
+
+    def test_session_timestamp_rejects_delay_and_clock_jump(self):
+        origin = 1_000_000_000
+        with self.assertRaises(PacketError):
+            validate_session_packet_timestamp(
+                origin + 100_000_000,
+                origin,
+                origin + 700_000_000,
+                origin,
+                0.5,
+                0.25,
+            )
+        with self.assertRaises(PacketError):
+            validate_session_packet_timestamp(
+                origin + 400_000_000,
+                origin,
+                origin + 100_000_000,
+                origin,
+                0.5,
+                0.25,
+            )
+        with self.assertRaises(PacketError):
+            validate_session_packet_timestamp(
+                origin - 1,
+                origin,
+                origin + 100_000_000,
+                origin,
+                0.5,
+                0.25,
+            )
 
 
 class FilterAndMappingTests(unittest.TestCase):

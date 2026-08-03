@@ -24,7 +24,7 @@ from .core import (
     SafetyError,
     StopFrame,
     parse_teleop_packet,
-    validate_packet_timestamp,
+    validate_session_packet_timestamp,
 )
 
 
@@ -146,6 +146,8 @@ class UdpLeaderBridge(Node):
             ),
         )
         self.current_session: str | None = None
+        self.session_sender_timestamp_origin_ns: int | None = None
+        self.session_receiver_monotonic_origin_ns: int | None = None
         self.last_sequence: int | None = None
         self.last_leader_position: tuple[float, ...] | None = None
         self.last_filtered_position: tuple[float, ...] | None = None
@@ -374,26 +376,37 @@ class UdpLeaderBridge(Node):
                         f"Windows STOP ({frame.reason}, session={frame.session_id})"
                     )
                     continue
+                received_monotonic_ns = time.monotonic_ns()
+                new_session = frame.session_id != self.current_session
+                if new_session:
+                    sender_origin_ns = frame.timestamp_unix_ns
+                    receiver_origin_ns = received_monotonic_ns
+                else:
+                    if (
+                        self.session_sender_timestamp_origin_ns is None
+                        or self.session_receiver_monotonic_origin_ns is None
+                    ):
+                        raise PacketError("packet session clock origin is missing")
+                    sender_origin_ns = self.session_sender_timestamp_origin_ns
+                    receiver_origin_ns = (
+                        self.session_receiver_monotonic_origin_ns
+                    )
                 if self.enforce_packet_timestamps:
-                    packet_age = validate_packet_timestamp(
+                    packet_age = validate_session_packet_timestamp(
                         frame.timestamp_unix_ns,
-                        time.time_ns(),
+                        sender_origin_ns,
+                        received_monotonic_ns,
+                        receiver_origin_ns,
                         self.max_packet_age,
                         self.max_future_skew,
                     )
                 else:
-                    packet_age = (
-                        time.time_ns() - frame.timestamp_unix_ns
-                    ) / 1_000_000_000.0
-                if frame.session_id != self.current_session:
-                    self.current_session = frame.session_id
-                    self.last_sequence = None
-                    self.accepted_packet_times.clear()
-                    self.unwrapper.reset()
-                    self.signal_filter.reset()
-                    if self.mapping_enabled:
-                        self._request_stop("leader session changed")
-                if self.last_sequence is not None and frame.sequence <= self.last_sequence:
+                    packet_age = 0.0
+                if (
+                    not new_session
+                    and self.last_sequence is not None
+                    and frame.sequence <= self.last_sequence
+                ):
                     raise PacketError("sequence is not newer than the previous packet")
                 if not self.gripper_only_mode:
                     for index, pulse in enumerate(frame.joint_pulses):
@@ -407,6 +420,16 @@ class UdpLeaderBridge(Node):
                                 f"outside [{self.leader_min_valid_pulse}, "
                                 f"{self.leader_max_valid_pulse}]"
                             )
+                if new_session:
+                    self.current_session = frame.session_id
+                    self.session_sender_timestamp_origin_ns = sender_origin_ns
+                    self.session_receiver_monotonic_origin_ns = receiver_origin_ns
+                    self.last_sequence = None
+                    self.accepted_packet_times.clear()
+                    self.unwrapper.reset()
+                    self.signal_filter.reset()
+                    if self.mapping_enabled:
+                        self._request_stop("leader session changed")
                 leader_position = self.unwrapper.update(frame.joint_pulses)
                 filtered_position = self.signal_filter.update(leader_position)
             except (PacketError, SafetyError) as exc:
@@ -503,6 +526,7 @@ class UdpLeaderBridge(Node):
             f"arm_before_deadman={self.arm_before_deadman};"
             f"calibration_complete={self.calibration_complete};"
             f"expected_source_ip={self.expected_source_ip or 'UNCONFIGURED'};"
+            "timestamp_basis=session_relative_monotonic;"
             f"deadman_held={self.last_deadman_held};"
             f"session={self.current_session or 'none'};"
             f"sequence={self.last_sequence if self.last_sequence is not None else -1};"

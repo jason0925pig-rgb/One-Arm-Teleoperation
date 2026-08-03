@@ -159,6 +159,53 @@ def validate_packet_timestamp(
     return age_seconds
 
 
+def validate_session_packet_timestamp(
+    sender_timestamp_ns: int,
+    sender_origin_ns: int,
+    receiver_monotonic_ns: int,
+    receiver_origin_monotonic_ns: int,
+    max_age_seconds: float,
+    max_future_skew_seconds: float,
+) -> float:
+    """Validate packet delay without requiring synchronized host clocks.
+
+    The first accepted packet in a sender session establishes both origins.
+    Subsequent sender elapsed time is compared with receiver monotonic elapsed
+    time.  This retains stale/future packet detection while tolerating a fixed
+    wall-clock offset between Windows and Ubuntu.
+    """
+    if min(
+        sender_timestamp_ns,
+        sender_origin_ns,
+        receiver_monotonic_ns,
+        receiver_origin_monotonic_ns,
+    ) <= 0:
+        raise PacketError("packet session timestamps must be positive")
+    if max_age_seconds <= 0.0 or max_future_skew_seconds < 0.0:
+        raise ValueError("timestamp limits are invalid")
+    sender_elapsed_ns = sender_timestamp_ns - sender_origin_ns
+    receiver_elapsed_ns = (
+        receiver_monotonic_ns - receiver_origin_monotonic_ns
+    )
+    if sender_elapsed_ns < 0:
+        raise PacketError("packet timestamp moved backwards within session")
+    if receiver_elapsed_ns < 0:
+        raise PacketError("receiver monotonic timestamp moved backwards")
+    age_seconds = (
+        receiver_elapsed_ns - sender_elapsed_ns
+    ) / 1_000_000_000.0
+    if age_seconds > max_age_seconds:
+        raise PacketError(
+            f"packet is stale ({age_seconds:.3f}s > {max_age_seconds:.3f}s)"
+        )
+    if age_seconds < -max_future_skew_seconds:
+        raise PacketError(
+            "packet timestamp advanced too far within session "
+            f"({-age_seconds:.3f}s > {max_future_skew_seconds:.3f}s)"
+        )
+    return age_seconds
+
+
 class MultiJointUnwrapper:
     def __init__(
         self,
