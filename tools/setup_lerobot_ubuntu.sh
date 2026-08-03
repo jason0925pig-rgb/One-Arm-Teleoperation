@@ -13,18 +13,32 @@ else
   ROS_DISTRO_NAME="jazzy"
 fi
 ROS_SETUP="/opt/ros/${ROS_DISTRO_NAME}/setup.bash"
-LEROBOT_VERSION="${ONE_ARM_LEROBOT_VERSION:-0.6.0}"
 PYPI_INDEX="${ONE_ARM_PYPI_INDEX:-https://pypi.org/simple}"
 ARCHITECTURE="$(uname -m)"
+PYTHON_MINOR="$(python3 -c 'import sys; print(sys.version_info.minor)')"
+if [[ -n "${ONE_ARM_LEROBOT_VERSION:-}" ]]; then
+  LEROBOT_VERSION="${ONE_ARM_LEROBOT_VERSION}"
+elif (( PYTHON_MINOR >= 12 )); then
+  LEROBOT_VERSION="0.6.0"
+else
+  # LeRobot 0.4.4 supports Python 3.10 and already writes CODEBASE_VERSION
+  # v3.0 datasets.  LeRobot 0.6.0 itself requires Python 3.12 or newer.
+  LEROBOT_VERSION="0.4.4"
+fi
 
 if [[ "${ARCHITECTURE}" == "aarch64" || "${ARCHITECTURE}" == "arm64" ]]; then
-  # LeRobot 0.6 publishes its Linux ARM64 TorchCodec dependency only from
-  # 0.11 onward; that wheel requires Torch 2.11.  This isolated environment
-  # is for dataset export.  SmolVLA GPU inference should use a separate,
-  # JetPack-compatible NVIDIA PyTorch/container environment.
-  TORCH_VERSION="${ONE_ARM_TORCH_VERSION:-2.11.0}"
-  TORCHVISION_VERSION="${ONE_ARM_TORCHVISION_VERSION:-0.26.0}"
-  TORCHCODEC_VERSION="${ONE_ARM_TORCHCODEC_VERSION:-0.11.1}"
+  if [[ "${LEROBOT_VERSION}" == "0.4.4" ]]; then
+    TORCH_VERSION="${ONE_ARM_TORCH_VERSION:-2.10.0}"
+    TORCHVISION_VERSION="${ONE_ARM_TORCHVISION_VERSION:-0.25.0}"
+    # LeRobot 0.4.4 intentionally uses PyAV on Linux ARM64.
+    TORCHCODEC_VERSION="${ONE_ARM_TORCHCODEC_VERSION:-}"
+  else
+    TORCH_VERSION="${ONE_ARM_TORCH_VERSION:-2.11.0}"
+    TORCHVISION_VERSION="${ONE_ARM_TORCHVISION_VERSION:-0.26.0}"
+    TORCHCODEC_VERSION="${ONE_ARM_TORCHCODEC_VERSION:-0.11.1}"
+  fi
+  # This isolated environment is for dataset export.  SmolVLA GPU inference
+  # should use a separate, JetPack-compatible NVIDIA PyTorch/container.
   # The regular PyPI ARM64 wheel pulls a full CUDA 13 toolkit, which is both
   # unnecessary for export and incompatible with this JetPack 6.0 host.
   # PyTorch's CPU index provides native ARM64 +cpu wheels without that stack.
@@ -61,15 +75,23 @@ fi
 "${VENV}/bin/python" -m pip install \
   --index-url "${PYPI_INDEX}" \
   "lerobot[dataset]==${LEROBOT_VERSION}"
-"${VENV}/bin/python" -m pip install \
-  --index-url "${PYPI_INDEX}" \
+EXTRA_PACKAGES=(
   "pandas>=2.2,<3" \
   "scipy>=1.13,<2" \
   "setuptools>=71,<80" \
   "numexpr>=2.10,<3" \
-  "bottleneck>=1.4,<2" \
-  "torchcodec==${TORCHCODEC_VERSION}"
+  "bottleneck>=1.4,<2"
+)
+if [[ -n "${TORCHCODEC_VERSION}" ]]; then
+  EXTRA_PACKAGES+=("torchcodec==${TORCHCODEC_VERSION}")
+fi
+"${VENV}/bin/python" -m pip install \
+  --index-url "${PYPI_INDEX}" \
+  "${EXTRA_PACKAGES[@]}"
+export ONE_ARM_EXPECT_TORCHCODEC="${TORCHCODEC_VERSION}"
 "${VENV}/bin/python" - <<'PY'
+import os
+
 import cv2
 import lerobot
 import pandas
@@ -77,14 +99,19 @@ import pyarrow
 import rclpy
 import rosbag2_py
 import torch
-import torchcodec
 from lerobot.datasets import LeRobotDataset
+
+torchcodec_version = "PyAV fallback"
+if os.environ.get("ONE_ARM_EXPECT_TORCHCODEC"):
+    import torchcodec
+
+    torchcodec_version = torchcodec.__version__
 
 print(
     "LeRobot environment ready: "
     f"lerobot={lerobot.__version__} pandas={pandas.__version__} "
     f"pyarrow={pyarrow.__version__} torch={torch.__version__} "
-    f"torchcodec={torchcodec.__version__} dataset={LeRobotDataset.__name__}"
+    f"video={torchcodec_version} dataset={LeRobotDataset.__name__}"
 )
 PY
 echo "LEROBOT_VENV_READY=${VENV}"
