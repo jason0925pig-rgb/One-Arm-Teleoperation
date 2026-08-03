@@ -111,6 +111,35 @@ wait_status_field() {
   return 1
 }
 
+wait_status_fields() {
+  local timeout_seconds="$1"
+  shift
+  local deadline=$((SECONDS + timeout_seconds))
+  local output=""
+  local expected=""
+  local all_present=0
+  while (( SECONDS < deadline )); do
+    output="$(topic_once /right_arm/safety_status 2 || true)"
+    if [[ -n "${output}" ]]; then
+      all_present=1
+      for expected in "$@"; do
+        if ! grep -Fq "${expected}" <<<"${output}"; then
+          all_present=0
+          break
+        fi
+      done
+      if (( all_present != 0 )); then
+        printf '%s\n' "${output}"
+        return 0
+      fi
+    fi
+    sleep 0.25
+  done
+  echo "ERROR: no single safety-status sample contained all required fields: $*" >&2
+  [[ -n "${output}" ]] && printf '%s\n' "${output}" >&2
+  return 1
+}
+
 call_set_bool() {
   local service_name="$1"
   local value="$2"
@@ -434,16 +463,18 @@ arm_stack() {
   sleep 1
   ensure_components_running
   local armed_status
-  armed_status="$(topic_once /right_arm/safety_status 4 || true)"
-  printf '%s\n' "${armed_status}"
-  if ! grep -Fq "motion_enabled=1" <<<"${armed_status}" ||
-     ! grep -Fq "servo_mode_entered=1" <<<"${armed_status}" ||
-     ! grep -Fq "robot_error_code=0" <<<"${armed_status}"; then
+  if ! armed_status="$(
+    wait_status_fields 10 \
+      "motion_enabled=1" \
+      "servo_mode_entered=1" \
+      "robot_error_code=0"
+  )"; then
     echo "ERROR: servo gate did not remain stable for one second." >&2
     safe_hardware_shutdown || true
     show_logs
     exit 6
   fi
+  printf '%s\n' "${armed_status}"
 
   echo "FULL_TELEOP_READY"
   echo "The robot is servo-ready but receives no motion command until Space."
