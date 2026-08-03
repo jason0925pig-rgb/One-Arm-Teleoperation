@@ -1,7 +1,13 @@
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import GroupAction, IncludeLaunchDescription, TimerAction
+from launch.actions import (
+    DeclareLaunchArgument,
+    GroupAction,
+    IncludeLaunchDescription,
+    TimerAction,
+)
 from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.substitutions import LaunchConfiguration
 
 
 def generate_launch_description():
@@ -16,6 +22,8 @@ def generate_launch_description():
     driver_launch = PythonLaunchDescriptionSource(
         f"{orbbec_share}/launch/gemini_330_series.launch.py"
     )
+    head_serial = LaunchConfiguration("head_serial")
+    wrist_serial = LaunchConfiguration("wrist_serial")
 
     common_arguments = {
         "device_num": "2",
@@ -45,7 +53,7 @@ def generate_launch_description():
         launch_arguments={
             **common_arguments,
             "camera_name": "camera_head",
-            "serial_number": "CPCD7530003J",
+            "serial_number": head_serial,
         }.items(),
     )
     wrist = IncludeLaunchDescription(
@@ -53,11 +61,21 @@ def generate_launch_description():
         launch_arguments={
             **common_arguments,
             "camera_name": "camera_wrist",
-            "serial_number": "CPCBC5300077",
+            "serial_number": wrist_serial,
         }.items(),
     )
     return LaunchDescription(
         [
+            DeclareLaunchArgument(
+                "head_serial",
+                default_value="CPCD7530003J",
+                description="Serial number of the physical head camera",
+            ),
+            DeclareLaunchArgument(
+                "wrist_serial",
+                default_value="CPCBC5300077",
+                description="Serial number of the right-wrist camera",
+            ),
             GroupAction([head]),
             # Stagger USB initialization to avoid both Gemini devices opening
             # their color endpoints in the same scheduler tick.

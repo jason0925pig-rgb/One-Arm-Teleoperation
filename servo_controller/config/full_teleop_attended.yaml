@@ -15,13 +15,11 @@ safe_one_arm_servo:
     enable_robot_on_arm: false
     disable_robot_on_disarm: false
 
-    # Requested operator-command/network watchdog. Fresh robot feedback keeps
-    # its independent 800 ms watchdog and is never relaxed to three seconds.
-    # The wired Windows->Ubuntu stream is about 15 Hz because ZLink2 serial
-    # polling, rather than Ethernet, is the bottleneck. Missing roughly eleven
-    # consecutive valid frames (0.75 s) stops motion.
-    command_timeout_seconds: 0.75
-    feedback_timeout_seconds: 0.80
+    # The bridge stops first at 400 ms without a valid wired leader packet.
+    # This independent execution watchdog closes the servo gate at 450 ms if
+    # a STOP message is itself lost. Robot feedback has its own 500 ms limit.
+    command_timeout_seconds: 0.45
+    feedback_timeout_seconds: 0.50
     control_rate_hz: 125.0
     state_rate_hz: 20.0
     control_deadline_warning_factor: 1.5

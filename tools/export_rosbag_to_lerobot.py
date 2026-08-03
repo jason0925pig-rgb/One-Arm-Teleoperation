@@ -7,7 +7,9 @@ import argparse
 import bisect
 import json
 import math
+import sqlite3
 import sys
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Sequence
@@ -51,6 +53,137 @@ class TimedStream:
 class SelectedSample:
     index: int
     skew_ns: int
+
+
+@dataclass(frozen=True)
+class SqliteMessageRef:
+    """A lightweight pointer to one serialized message in a rosbag DB."""
+
+    database_index: int
+    message_id: int
+    type_name: str
+
+
+class SqliteMessageStore:
+    """Index a sqlite3 rosbag without retaining image payloads in RAM."""
+
+    def __init__(self, bag_dir: Path, cache_size: int = 16) -> None:
+        database_paths = sorted(bag_dir.glob("*.db3"))
+        if not database_paths:
+            raise FileNotFoundError(
+                f"no sqlite3 rosbag database (*.db3) found in {bag_dir}"
+            )
+        self._connections: list[sqlite3.Connection] = []
+        for path in database_paths:
+            connection = sqlite3.connect(
+                f"{path.resolve().as_uri()}?mode=ro",
+                uri=True,
+            )
+            connection.execute("PRAGMA query_only=ON")
+            self._connections.append(connection)
+        self._cache_size = max(int(cache_size), 0)
+        self._cache: OrderedDict[SqliteMessageRef, Any] = OrderedDict()
+        self._message_types: dict[str, Any] = {}
+
+    def close(self) -> None:
+        self._cache.clear()
+        for connection in self._connections:
+            connection.close()
+        self._connections.clear()
+
+    def __enter__(self) -> "SqliteMessageStore":
+        return self
+
+    def __exit__(self, *_: Any) -> None:
+        self.close()
+
+    def _message_type(self, type_name: str) -> Any:
+        try:
+            return self._message_types[type_name]
+        except KeyError:
+            try:
+                from rosidl_runtime_py.utilities import get_message
+            except ImportError as exc:
+                raise RuntimeError(
+                    "run this exporter in the sourced Ubuntu ROS 2 environment"
+                ) from exc
+            message_type = get_message(type_name)
+            self._message_types[type_name] = message_type
+            return message_type
+
+    def _deserialize(self, serialized: bytes, type_name: str) -> Any:
+        try:
+            from rclpy.serialization import deserialize_message
+        except ImportError as exc:
+            raise RuntimeError(
+                "run this exporter in the sourced Ubuntu ROS 2 environment"
+            ) from exc
+        return deserialize_message(serialized, self._message_type(type_name))
+
+    def index(
+        self,
+        requested_topics: set[str],
+    ) -> dict[str, TimedStream]:
+        streams = {topic: TimedStream(topic=topic) for topic in requested_topics}
+        for database_index, connection in enumerate(self._connections):
+            topic_rows = connection.execute(
+                "SELECT id, name, type FROM topics"
+            ).fetchall()
+            selected_topics = {
+                int(topic_id): (str(name), str(type_name))
+                for topic_id, name, type_name in topic_rows
+                if str(name) in requested_topics
+            }
+            for topic_id, (topic, type_name) in selected_topics.items():
+                stream = streams[topic]
+                if stream.type_name and stream.type_name != type_name:
+                    raise ValueError(
+                        f"{topic} changes type between bag files: "
+                        f"{stream.type_name!r} vs {type_name!r}"
+                    )
+                stream.type_name = type_name
+                cursor = connection.execute(
+                    "SELECT id, timestamp, data FROM messages "
+                    "WHERE topic_id = ? ORDER BY timestamp",
+                    (topic_id,),
+                )
+                for message_id, bag_timestamp_ns, serialized in cursor:
+                    message = self._deserialize(serialized, type_name)
+                    stream.append(
+                        _header_timestamp_ns(message, int(bag_timestamp_ns)),
+                        SqliteMessageRef(
+                            database_index=database_index,
+                            message_id=int(message_id),
+                            type_name=type_name,
+                        ),
+                    )
+        for stream in streams.values():
+            stream.sort()
+        return streams
+
+    def load(self, reference: SqliteMessageRef) -> Any:
+        cached = self._cache.get(reference)
+        if cached is not None:
+            self._cache.move_to_end(reference)
+            return cached
+        try:
+            row = self._connections[reference.database_index].execute(
+                "SELECT data FROM messages WHERE id = ?",
+                (reference.message_id,),
+            ).fetchone()
+        except IndexError as exc:
+            raise ValueError("invalid rosbag database reference") from exc
+        if row is None:
+            raise ValueError(
+                f"rosbag message id {reference.message_id} is missing"
+            )
+        message = self._deserialize(row[0], reference.type_name)
+        if self._cache_size:
+            self._cache[reference] = message
+            self._cache.move_to_end(reference)
+            while len(self._cache) > self._cache_size:
+                self._cache.popitem(last=False)
+        return message
 
 
 def _header_timestamp_ns(message: Any, fallback_ns: int) -> int:
@@ -208,53 +341,18 @@ def _read_rosbag(
     bag_dir: Path,
     storage_id: str,
     requested_topics: set[str],
-) -> dict[str, TimedStream]:
+) -> tuple[dict[str, TimedStream], SqliteMessageStore]:
+    if storage_id != "sqlite3":
+        raise ValueError(
+            f"memory-bounded export currently requires sqlite3, got "
+            f"{storage_id!r}"
+        )
+    store = SqliteMessageStore(bag_dir)
     try:
-        import rosbag2_py
-        from rclpy.serialization import deserialize_message
-        from rosidl_runtime_py.utilities import get_message
-    except ImportError as exc:
-        raise RuntimeError(
-            "run this exporter in the sourced Ubuntu ROS 2 environment"
-        ) from exc
-
-    reader = rosbag2_py.SequentialReader()
-    reader.open(
-        rosbag2_py.StorageOptions(
-            uri=str(bag_dir),
-            storage_id=storage_id,
-        ),
-        rosbag2_py.ConverterOptions(
-            input_serialization_format="cdr",
-            output_serialization_format="cdr",
-        ),
-    )
-    topic_types = {
-        item.name: item.type for item in reader.get_all_topics_and_types()
-    }
-    streams = {
-        topic: TimedStream(topic=topic, type_name=topic_types.get(topic, ""))
-        for topic in requested_topics
-    }
-    message_types: dict[str, Any] = {}
-    while reader.has_next():
-        topic, serialized, bag_timestamp_ns = reader.read_next()
-        if topic not in streams:
-            continue
-        type_name = topic_types.get(topic)
-        if not type_name:
-            continue
-        message_type = message_types.setdefault(
-            type_name, get_message(type_name)
-        )
-        message = deserialize_message(serialized, message_type)
-        streams[topic].append(
-            _header_timestamp_ns(message, int(bag_timestamp_ns)),
-            message,
-        )
-    for stream in streams.values():
-        stream.sort()
-    return streams
+        return store.index(requested_topics), store
+    except Exception:
+        store.close()
+        raise
 
 
 def _validate_stream_type(
@@ -423,7 +521,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-camera-duplicate-ratio", type=float, default=0.05
     )
     parser.add_argument("--minimum-frames", type=int, default=30)
-    parser.add_argument("--image-writer-threads", type=int, default=4)
+    # Offline export must apply backpressure. LeRobot's asynchronous image
+    # writer uses an unbounded queue, so a fast rosbag decoder can otherwise
+    # retain thousands of decoded 720p frames and be killed by the OOM killer.
+    parser.add_argument("--image-writer-threads", type=int, default=0)
     return parser
 
 
@@ -492,7 +593,7 @@ def main() -> int:
         args.head_topic,
         args.wrist_topic,
     }
-    streams = _read_rosbag(
+    streams, message_store = _read_rosbag(
         bag_dir,
         str(metadata.get("storage", "sqlite3")),
         topics,
@@ -575,15 +676,15 @@ def main() -> int:
             )
 
     first_head = _decode_image(
-        streams[args.head_topic].values[
+        message_store.load(streams[args.head_topic].values[
             selectors[args.head_topic][0].index
-        ],
+        ]),
         streams[args.head_topic].type_name,
     )
     first_wrist = _decode_image(
-        streams[args.wrist_topic].values[
+        message_store.load(streams[args.wrist_topic].values[
             selectors[args.wrist_topic][0].index
-        ],
+        ]),
         streams[args.wrist_topic].type_name,
     )
     if first_head.ndim != 3 or first_head.shape[2] != 3:
@@ -624,6 +725,7 @@ def main() -> int:
     }
     if args.dry_run:
         _write_report(report_path, quality)
+        message_store.close()
         print(
             f"Validated {len(grid)} frames at {fps} FPS; no dataset was written."
         )
@@ -672,7 +774,7 @@ def main() -> int:
         if cached is not None and cached[0] == selected.index:
             return cached[1]
         image = _decode_image(
-            streams[topic].values[selected.index],
+            message_store.load(streams[topic].values[selected.index]),
             streams[topic].type_name,
         )
         decode_cache[topic] = (selected.index, image)
@@ -680,25 +782,33 @@ def main() -> int:
 
     try:
         for frame_index in range(len(grid)):
-            state_message = streams[args.state_topic].values[
-                selectors[args.state_topic][frame_index].index
-            ]
-            action_message = streams[args.action_topic].values[
-                selectors[args.action_topic][frame_index].index
-            ]
-            gripper_message = streams[args.gripper_action_topic].values[
-                selectors[args.gripper_action_topic][frame_index].index
-            ]
-            feedback_message = streams[
-                args.gripper_feedback_valid_topic
-            ].values[
-                selectors[args.gripper_feedback_valid_topic][
-                    frame_index
-                ].index
-            ]
-            contact_message = streams[args.gripper_contact_topic].values[
-                selectors[args.gripper_contact_topic][frame_index].index
-            ]
+            state_message = message_store.load(
+                streams[args.state_topic].values[
+                    selectors[args.state_topic][frame_index].index
+                ]
+            )
+            action_message = message_store.load(
+                streams[args.action_topic].values[
+                    selectors[args.action_topic][frame_index].index
+                ]
+            )
+            gripper_message = message_store.load(
+                streams[args.gripper_action_topic].values[
+                    selectors[args.gripper_action_topic][frame_index].index
+                ]
+            )
+            feedback_message = message_store.load(
+                streams[args.gripper_feedback_valid_topic].values[
+                    selectors[args.gripper_feedback_valid_topic][
+                        frame_index
+                    ].index
+                ]
+            )
+            contact_message = message_store.load(
+                streams[args.gripper_contact_topic].values[
+                    selectors[args.gripper_contact_topic][frame_index].index
+                ]
+            )
             gripper = _closed_value(gripper_message)
             state = np.concatenate(
                 (_joint_positions(state_message), np.asarray([gripper]))
@@ -748,7 +858,10 @@ def main() -> int:
         if dataset.has_pending_frames():
             dataset.clear_episode_buffer(delete_images=True)
         dataset.finalize()
+        message_store.close()
         raise
+
+    message_store.close()
 
     quality["status"] = "complete"
     quality["dataset_episode_index"] = int(dataset.num_episodes) - 1

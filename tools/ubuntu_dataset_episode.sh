@@ -22,8 +22,8 @@ MINIMUM_FREE_BYTES="${ONE_ARM_DATASET_MIN_FREE_BYTES:-10737418240}"
 RECORDER_STOP_TIMEOUT_SECONDS="${ONE_ARM_RECORDER_STOP_TIMEOUT_SECONDS:-180}"
 HEAD_TOPIC="/camera_head/color/image_raw/compressed"
 WRIST_TOPIC="/camera_wrist/color/image_raw/compressed"
-HEAD_SERIAL="CPCD7530003J"
-WRIST_SERIAL="CPCBC5300077"
+HEAD_SERIAL="${ONE_ARM_HEAD_SERIAL:-CPCD7530003J}"
+WRIST_SERIAL="${ONE_ARM_WRIST_SERIAL:-CPCBC5300077}"
 BACKGROUND_CPU_LIST="${ONE_ARM_BACKGROUND_CPUS:-}"
 
 mkdir -p "${RUNTIME_DIR}"
@@ -232,7 +232,9 @@ start_cameras() {
   fi
   start_component cameras \
     nice -n 5 taskset -c "${BACKGROUND_CPU_LIST}" \
-      ros2 launch one_arm_teleop_bridge dataset_cameras.launch.py
+      ros2 launch one_arm_teleop_bridge dataset_cameras.launch.py \
+      head_serial:="${HEAD_SERIAL}" \
+      wrist_serial:="${WRIST_SERIAL}"
   if ! wait_for_topic_publisher "${HEAD_TOPIC}" 25 ||
      ! wait_for_topic_publisher "${WRIST_TOPIC}" 25; then
     tail -n 80 "$(component_log_file cameras)" >&2 || true

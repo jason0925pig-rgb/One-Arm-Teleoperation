@@ -1,14 +1,19 @@
 [CmdletBinding()]
 param(
     [string]$ComPort = "COM10",
-    [string]$UbuntuHost = "armstrong-host",
-    [string]$UbuntuProject = "/home/tele/onearm_teleop/One-Arm-Teleoperation",
-    [string]$UbuntuUdpTarget = "192.168.2.116:5005",
-    [string]$RequiredWindowsSourceIp = "192.168.2.130",
+    [ValidateSet("new-humble", "legacy-jazzy")]
+    [string]$DeploymentProfile = "new-humble",
+    [string]$UbuntuHost = "",
+    [string]$UbuntuProject = "",
+    [string]$UbuntuUdpTarget = "",
+    [string]$RequiredWindowsSourceIp = "",
     [string]$UbuntuRosDistro = "",
     [string]$UbuntuOrbbecSetup = "",
     [string]$UbuntuLerobotPython = "",
     [string]$UbuntuDatasetDataRoot = "",
+    [string]$UbuntuHeadSerial = "",
+    [string]$UbuntuWristSerial = "",
+    [string]$SshIdentityFile = "$env:USERPROFILE\.ssh\one_arm_teleop_ed25519",
     [ValidateRange(1.0, 100.0)]
     [double]$RateHz = 100.0,
     [string]$SessionName = "full_teleop",
@@ -18,6 +23,44 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+$profileDefaults = if ($DeploymentProfile -eq "new-humble") {
+    @{
+        UbuntuHost = "nvidia@192.168.2.170"
+        UbuntuProject = "/home/nvidia/work/telop/One-Arm-Teleoperation"
+        UbuntuUdpTarget = "192.168.2.170:5005"
+        RequiredWindowsSourceIp = "192.168.2.130"
+        UbuntuRosDistro = "humble"
+        UbuntuOrbbecSetup = "/home/nvidia/work/camera_336l/install/setup.bash"
+        UbuntuLerobotPython = "/home/nvidia/.venvs/onearm-lerobot/bin/python"
+        UbuntuDatasetDataRoot = "/home/nvidia/work/telop/onearm_Tele"
+        UbuntuHeadSerial = "UNCONFIGURED_NEW_HEAD"
+        UbuntuWristSerial = "UNCONFIGURED_NEW_WRIST"
+    }
+}
+else {
+    @{
+        UbuntuHost = "armstrong-host"
+        UbuntuProject = "/home/tele/onearm_teleop/One-Arm-Teleoperation"
+        UbuntuUdpTarget = "192.168.2.116:5005"
+        RequiredWindowsSourceIp = "192.168.2.130"
+        UbuntuRosDistro = "jazzy"
+        UbuntuOrbbecSetup = "/home/tele/ros2_ws/install/setup.bash"
+        UbuntuLerobotPython = "/home/tele/.venvs/onearm-lerobot/bin/python"
+        UbuntuDatasetDataRoot = (
+            "/home/tele/onearm_teleop/One-Arm-Teleoperation/" +
+            "datasets/onearm_Tele"
+        )
+        UbuntuHeadSerial = "CPCD7530003J"
+        UbuntuWristSerial = "CPCBC5300077"
+    }
+}
+foreach ($name in $profileDefaults.Keys) {
+    if ([string]::IsNullOrWhiteSpace((Get-Variable -Name $name).Value)) {
+        Set-Variable -Name $name -Value $profileDefaults[$name]
+    }
+}
+
 $script:RemoteStackStarted = $false
 $script:SenderProcess = $null
 $script:ReadyFile = $null
@@ -29,17 +72,31 @@ $script:EpisodeRecordingStarted = $false
 function Invoke-CheckedSsh {
     param([Parameter(Mandatory = $true)][string]$RemoteCommand)
 
-    & ssh.exe `
-        -o BatchMode=yes `
-        -o ConnectTimeout=8 `
-        -o ServerAliveInterval=15 `
-        -o ServerAliveCountMax=8 `
-        -o TCPKeepAlive=yes `
+    $sshArguments = Get-SshArguments
+    & ssh.exe @sshArguments `
         $UbuntuHost `
         $RemoteCommand
     if ($LASTEXITCODE -ne 0) {
         throw "SSH command failed with exit code $LASTEXITCODE."
     }
+}
+
+function Get-SshArguments {
+    $arguments = @(
+        "-o", "BatchMode=yes",
+        "-o", "ConnectTimeout=8",
+        "-o", "ServerAliveInterval=15",
+        "-o", "ServerAliveCountMax=8",
+        "-o", "TCPKeepAlive=yes",
+        "-b", $script:WindowsSourceIp
+    )
+    if (-not [string]::IsNullOrWhiteSpace($SshIdentityFile)) {
+        if (-not (Test-Path -LiteralPath $SshIdentityFile -PathType Leaf)) {
+            throw "SSH identity file is missing: $SshIdentityFile"
+        }
+        $arguments += @("-i", $SshIdentityFile)
+    }
+    return $arguments
 }
 
 function Get-UdpSourceAddress {
@@ -90,12 +147,8 @@ function Stop-RemoteStack {
     }
     Write-Host ""
     Write-Host "Stopping Ubuntu mapping, servo mode, gripper, robot enable and power..."
-    & ssh.exe `
-        -o BatchMode=yes `
-        -o ConnectTimeout=8 `
-        -o ServerAliveInterval=15 `
-        -o ServerAliveCountMax=8 `
-        -o TCPKeepAlive=yes `
+    $sshArguments = Get-SshArguments
+    & ssh.exe @sshArguments `
         $UbuntuHost `
         "cd $remoteProject && ${remoteEnvironment}bash tools/ubuntu_full_teleop_stack.sh stop"
     if ($LASTEXITCODE -ne 0) {
@@ -110,12 +163,8 @@ function Stop-DatasetCapture {
     }
     Write-Host ""
     Write-Host "Stopping passive episode recorder and the two dataset cameras..."
-    & ssh.exe `
-        -o BatchMode=yes `
-        -o ConnectTimeout=8 `
-        -o ServerAliveInterval=15 `
-        -o ServerAliveCountMax=8 `
-        -o TCPKeepAlive=yes `
+    $sshArguments = Get-SshArguments
+    & ssh.exe @sshArguments `
         $UbuntuHost `
         "cd $remoteProject && ${remoteEnvironment}bash tools/ubuntu_dataset_episode.sh stop"
     if ($LASTEXITCODE -ne 0) {
@@ -155,6 +204,12 @@ function Get-RemoteEnvironmentPrefix {
     if (-not [string]::IsNullOrWhiteSpace($UbuntuDatasetDataRoot)) {
         $pairs["ONE_ARM_DATASET_DATA_ROOT"] = $UbuntuDatasetDataRoot
     }
+    if (-not [string]::IsNullOrWhiteSpace($UbuntuHeadSerial)) {
+        $pairs["ONE_ARM_HEAD_SERIAL"] = $UbuntuHeadSerial
+    }
+    if (-not [string]::IsNullOrWhiteSpace($UbuntuWristSerial)) {
+        $pairs["ONE_ARM_WRIST_SERIAL"] = $UbuntuWristSerial
+    }
     if ($pairs.Count -eq 0) {
         return ""
     }
@@ -181,6 +236,7 @@ if ([string]::IsNullOrWhiteSpace($RequiredWindowsSourceIp)) {
 else {
     $windowsSourceIp = $RequiredWindowsSourceIp
 }
+$script:WindowsSourceIp = $windowsSourceIp
 Assert-MotionNetworkPath `
     -Target $UbuntuUdpTarget `
     -SourceIp $windowsSourceIp
@@ -212,13 +268,17 @@ if (Test-Path -LiteralPath $script:ReadyFile) {
 
 Write-Host "============================================================"
 Write-Host "One-Arm Teleoperation / PowerShell launcher"
+Write-Host "Deployment profile: $DeploymentProfile"
 Write-Host "Windows source IP : $windowsSourceIp"
+Write-Host "Transport policy  : wired-only (UDP and SSH bound to source IP)"
 Write-Host "SSH control path  : $UbuntuHost"
 Write-Host "UDP motion target : $UbuntuUdpTarget"
 Write-Host "Ubuntu project    : $UbuntuProject"
 Write-Host "ZLink2 port       : $ComPort"
 Write-Host "Task              : $Task"
 Write-Host "Dataset repo id   : $DatasetRepoId"
+Write-Host "Head camera SN    : $UbuntuHeadSerial"
+Write-Host "Wrist camera SN   : $UbuntuWristSerial"
 if (-not [string]::IsNullOrWhiteSpace($UbuntuDatasetDataRoot)) {
     Write-Host "Dataset root      : $UbuntuDatasetDataRoot"
 }

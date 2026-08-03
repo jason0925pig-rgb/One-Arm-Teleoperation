@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,6 +13,8 @@ sys.path.insert(0, str(TOOLS_DIR))
 
 from export_rosbag_to_lerobot import (
     DEFAULT_ACTION_TOPIC,
+    SqliteMessageRef,
+    SqliteMessageStore,
     TimedStream,
     _completed_export_index,
     _feature_schema,
@@ -172,6 +175,48 @@ class RequiredStreamTests(unittest.TestCase):
                 stream,
                 {"sensor_msgs/msg/JointState"},
             )
+
+
+class SqliteMessageStoreTests(unittest.TestCase):
+    def test_index_keeps_references_instead_of_serialized_payloads(self) -> None:
+        class FakeMessage:
+            header = None
+
+        with tempfile.TemporaryDirectory() as temporary:
+            bag_dir = Path(temporary)
+            connection = sqlite3.connect(bag_dir / "rosbag_0.db3")
+            connection.executescript(
+                """
+                CREATE TABLE topics(
+                    id INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    type TEXT NOT NULL
+                );
+                CREATE TABLE messages(
+                    id INTEGER PRIMARY KEY,
+                    topic_id INTEGER NOT NULL,
+                    timestamp INTEGER NOT NULL,
+                    data BLOB NOT NULL
+                );
+                INSERT INTO topics VALUES (
+                    1, '/test', 'example_interfaces/msg/UInt8'
+                );
+                INSERT INTO messages VALUES (10, 1, 1234, X'01020304');
+                """
+            )
+            connection.commit()
+            connection.close()
+
+            store = SqliteMessageStore(bag_dir)
+            store._deserialize = lambda *_: FakeMessage()  # type: ignore[method-assign]
+            try:
+                streams = store.index({"/test"})
+                reference = streams["/test"].values[0]
+                self.assertIsInstance(reference, SqliteMessageRef)
+                self.assertEqual(streams["/test"].times_ns, [1234])
+                self.assertIsInstance(store.load(reference), FakeMessage)
+            finally:
+                store.close()
 
 
 if __name__ == "__main__":
