@@ -20,10 +20,11 @@ from one_arm_teleop_bridge.core import (
 def make_packet():
     return {
         "protocol": "one_arm_teleop",
-        "version": 1,
+        "version": 2,
         "message_type": "leader_frame",
         "session_id": "test",
         "sequence": 1,
+        "sender_monotonic_ns": time.monotonic_ns(),
         "timestamp_unix_ns": time.time_ns(),
         "complete": True,
         "deadman_held": True,
@@ -65,7 +66,7 @@ class ProtocolTests(unittest.TestCase):
     def test_stop_packet_is_independent_and_idempotent(self):
         packet = {
             "protocol": "one_arm_teleop",
-            "version": 1,
+            "version": 2,
             "message_type": "stop",
             "session_id": "test",
             "sequence": 8,
@@ -105,6 +106,32 @@ class ProtocolTests(unittest.TestCase):
             ),
             0.02,
         )
+
+    def test_wall_clock_step_does_not_change_monotonic_packet_age(self):
+        first_packet = make_packet()
+        first_frame = parse_leader_packet(
+            json.dumps(first_packet).encode("ascii")
+        )
+        stepped_packet = make_packet()
+        stepped_packet["timestamp_unix_ns"] = (
+            first_packet["timestamp_unix_ns"] + 2_400_000_000
+        )
+        stepped_packet["sender_monotonic_ns"] = (
+            first_frame.sender_monotonic_ns + 60_000_000
+        )
+        stepped_frame = parse_leader_packet(
+            json.dumps(stepped_packet).encode("ascii")
+        )
+
+        age = validate_session_packet_timestamp(
+            stepped_frame.sender_monotonic_ns,
+            first_frame.sender_monotonic_ns,
+            8_065_000_000,
+            8_000_000_000,
+            0.5,
+            0.25,
+        )
+        self.assertAlmostEqual(age, 0.005)
 
     def test_session_timestamp_rejects_delay_and_clock_jump(self):
         origin = 1_000_000_000

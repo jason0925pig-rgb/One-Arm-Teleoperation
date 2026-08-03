@@ -11,7 +11,7 @@ from typing import Any, Union
 
 
 PROTOCOL = "one_arm_teleop"
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 JOINT_COUNT = 7
 EXPECTED_JOINT_NAMES = tuple(f"joint_{index}" for index in range(1, 8))
 
@@ -28,6 +28,7 @@ class SafetyError(ValueError):
 class LeaderFrame:
     session_id: str
     sequence: int
+    sender_monotonic_ns: int
     timestamp_unix_ns: int
     joint_names: tuple[str, ...]
     joint_pulses: tuple[int, ...]
@@ -91,6 +92,7 @@ def parse_teleop_packet(payload: bytes) -> TeleopPacket:
         raise PacketError("incomplete leader frames are not accepted")
 
     try:
+        sender_monotonic_ns = int(raw["sender_monotonic_ns"])
         joint_names = tuple(str(value) for value in raw["joint_names"])
         joint_pulses = tuple(int(value) for value in raw["joint_pulses"])
         gripper = raw["gripper"]
@@ -101,6 +103,8 @@ def parse_teleop_packet(payload: bytes) -> TeleopPacket:
     except (KeyError, TypeError, ValueError) as exc:
         raise PacketError(f"packet field is missing or invalid: {exc}") from exc
 
+    if sender_monotonic_ns <= 0:
+        raise PacketError("sender_monotonic_ns must be positive")
     if not isinstance(deadman_raw, bool):
         raise PacketError("deadman_held must be a JSON boolean")
     if joint_names != EXPECTED_JOINT_NAMES:
@@ -117,6 +121,7 @@ def parse_teleop_packet(payload: bytes) -> TeleopPacket:
     return LeaderFrame(
         session_id=session_id,
         sequence=sequence,
+        sender_monotonic_ns=sender_monotonic_ns,
         timestamp_unix_ns=timestamp_unix_ns,
         joint_names=joint_names,
         joint_pulses=joint_pulses,

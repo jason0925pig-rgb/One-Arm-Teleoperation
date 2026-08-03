@@ -50,7 +50,7 @@ RAD_PER_PULSE_PROVISIONAL = math.radians(270.0 / 2000.0)
 JOINT_LABEL_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 CH340_USB_IDS = {(0x1A86, 0x7523), (0x1A86, 0x5523)}
 TELEOP_PROTOCOL = "one_arm_teleop"
-TELEOP_PROTOCOL_VERSION = 1
+TELEOP_PROTOCOL_VERSION = 2
 
 
 def utc_now() -> str:
@@ -136,6 +136,9 @@ class UdpTeleopSender:
             "message_type": "leader_frame",
             "session_id": session_id,
             "sequence": int(row["sequence"]),
+            # Safety freshness must use a monotonic clock. Windows wall time
+            # can jump when w32time/NTP corrects the clock during an episode.
+            "sender_monotonic_ns": int(row["monotonic_ns"]),
             "timestamp_unix_ns": int(row["timestamp_unix_ns"]),
             "complete": True,
             "deadman_held": bool(deadman_held),
@@ -588,6 +591,7 @@ def initial_metadata(
             "transport": "udp",
             "protocol": TELEOP_PROTOCOL,
             "protocol_version": TELEOP_PROTOCOL_VERSION,
+            "freshness_clock": "sender_monotonic_ns",
             "target": (
                 f"{args.udp_target[0]}:{args.udp_target[1]}"
                 if args.udp_target is not None
