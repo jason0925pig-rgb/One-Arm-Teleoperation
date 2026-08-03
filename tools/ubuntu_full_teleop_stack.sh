@@ -170,15 +170,11 @@ wait_gripper_fields() {
 }
 
 initialize_gripper_open() {
-  local output
   echo "INITIAL_GRIPPER_OPENING: follower gripper will move to its configured open position."
-  output="$(
-    timeout 12 ros2 topic pub --once \
-      /right_arm/gripper_command std_msgs/msg/Bool '{data: true}' 2>&1
-  )" || {
-    printf '%s\n' "${output}" >&2
+  if ! call_set_bool /right_arm/set_gripper_open true; then
+    echo "ERROR: gripper node did not accept the initial OPEN command." >&2
     return 1
-  }
+  fi
   # The installed CTAG2F120 can report a stale/endpoint torque bit and a
   # measured position different from the commanded endpoint.  Do not require
   # an exact position or contact=0 here.  Hardware-command acknowledgement,
@@ -401,6 +397,7 @@ start_stack() {
 
   if ! wait_for_service /right_arm/set_powered_on 20 ||
      ! wait_for_service /right_arm/set_gripper_enabled 20 ||
+     ! wait_for_service /right_arm/set_gripper_open 20 ||
      ! wait_for_service /teleop/set_enabled 20; then
     show_logs
     stop_component bridge || true

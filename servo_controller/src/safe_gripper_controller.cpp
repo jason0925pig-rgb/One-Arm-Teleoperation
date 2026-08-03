@@ -72,6 +72,13 @@ public:
                 this,
                 std::placeholders::_1,
                 std::placeholders::_2));
+        open_service_ = create_service<std_srvs::srv::SetBool>(
+            prefix + "/set_gripper_open",
+            std::bind(
+                &SafeGripperController::set_open,
+                this,
+                std::placeholders::_1,
+                std::placeholders::_2));
         poll_timer_ = create_wall_timer(
             50ms, std::bind(&SafeGripperController::poll_state, this));
 
@@ -211,18 +218,20 @@ private:
         }
     }
 
-    void command_callback(const std_msgs::msg::Bool::SharedPtr message) {
-        std::lock_guard<std::mutex> lock(mutex_);
+    bool execute_command_locked(bool requested_open, std::string &reason) {
         if (!enabled_) {
-            return;
+            reason = "gripper is disabled";
+            return false;
         }
-        if (has_requested_state_ && message->data == requested_open_) {
+        if (has_requested_state_ && requested_open == requested_open_) {
             std_msgs::msg::Bool executed;
             executed.data = requested_open_;
             executed_command_pub_->publish(executed);
-            return;
+            reason = requested_open_ ? "gripper is already requested open"
+                                     : "gripper is already requested closed";
+            return true;
         }
-        requested_open_ = message->data;
+        requested_open_ = requested_open;
         has_requested_state_ = true;
         target_position_ = requested_open_ ? open_position_ : closed_position_;
         contact_ = false;
@@ -250,12 +259,32 @@ private:
             std_msgs::msg::Bool executed;
             executed.data = requested_open_;
             executed_command_pub_->publish(executed);
+            reason =
+                std::string("gripper command accepted: requested_open=") +
+                (requested_open_ ? "true" : "false") +
+                " target_position=" + std::to_string(target_position_);
+            return true;
         } catch (const std::exception &error) {
             enabled_ = false;
             moving_ = false;
             disable_hardware();
+            reason = error.what();
             RCLCPP_ERROR(get_logger(), "Gripper command failed: %s", error.what());
+            return false;
         }
+    }
+
+    void command_callback(const std_msgs::msg::Bool::SharedPtr message) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::string reason;
+        execute_command_locked(message->data, reason);
+    }
+
+    void set_open(
+        const std::shared_ptr<std_srvs::srv::SetBool::Request> request,
+        std::shared_ptr<std_srvs::srv::SetBool::Response> response) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        response->success = execute_command_locked(request->data, response->message);
     }
 
     void stop_callback(const std_msgs::msg::Bool::SharedPtr message) {
@@ -440,6 +469,7 @@ private:
     rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr contact_pub_;
     rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr executed_command_pub_;
     rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr enable_service_;
+    rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr open_service_;
     rclcpp::TimerBase::SharedPtr poll_timer_;
 };
 
