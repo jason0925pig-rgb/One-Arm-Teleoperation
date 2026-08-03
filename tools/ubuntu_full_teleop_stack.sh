@@ -179,15 +179,19 @@ initialize_gripper_open() {
     printf '%s\n' "${output}" >&2
     return 1
   }
+  # The installed CTAG2F120 can report a stale/endpoint torque bit and a
+  # measured position different from the commanded endpoint.  Do not require
+  # an exact position or contact=0 here.  Hardware-command acknowledgement,
+  # continued enable state, and completion of the attempt are the reliable
+  # startup fields available from this firmware.
   if ! wait_gripper_fields 8 \
       "enabled=1" \
       "moving=0" \
-      "requested_open=1" \
-      "position=2000" \
-      "contact=0"; then
+      "requested_open=1"; then
     return 1
   fi
-  echo "INITIAL_GRIPPER_OPEN_CONFIRMED"
+  echo "INITIAL_GRIPPER_OPEN_COMMAND_CONFIRMED"
+  echo "WARNING: visually confirm that the follower gripper is open before pressing Space."
 }
 
 call_set_bool() {
