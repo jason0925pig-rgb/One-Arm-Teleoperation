@@ -15,11 +15,13 @@ udp_leader_bridge:
     arm_before_deadman: true
 
     # The seven arm encoders wrap from 2500 back to 500 (2000 pulses).
-    # A returned zero is not a valid arm position and must not reach mapping.
+    # If one encoder temporarily returns zero/out-of-range, freeze only that
+    # joint at its last valid pulse while the other joints and gripper continue.
     leader_period_pulses: 2000
     leader_min_valid_pulse: 500
     leader_max_valid_pulse: 2500
-    max_leader_step_pulses: 800.0
+    leader_joint_dropout_hold_seconds: 10.0
+    max_leader_step_pulses: 950.0
 
     # Light smoothing: reject one-frame spikes, then use a responsive low-pass
     # and suppress two-pulse encoder chatter.
@@ -29,23 +31,22 @@ udp_leader_bridge:
 
     require_deadman_for_motion: true
     enforce_packet_timestamps_for_motion: true
-    # Reject (do not execute) a frame more than one second old. A rejected
+    # Reject (do not execute) a frame more than two seconds old. A rejected
     # frame no longer latches STOP by itself; only an explicit STOP, a robot
     # fault, or the three-second valid-packet watchdog does that.
-    max_packet_age_seconds: 1.00
-    # Windows can lead Ubuntu by about 0.5 s. Keep timestamp validation
-    # enabled while allowing the measured clock drift and network jitter.
-    max_future_skew_seconds: 1.00
+    max_packet_age_seconds: 2.00
+    # Keep timestamp validation enabled but allow generous attended-session
+    # clock drift and network jitter.
+    max_future_skew_seconds: 2.00
     # ZLink2 currently delivers about 15 valid complete frames per second.
-    # A failed scan can take roughly 390 ms while per-ID serial timeouts run,
-    # so one second tolerates two isolated slow scans without hiding a
-    # sustained leader-bus failure.
-    minimum_packet_rate_hz_for_motion: 10.0
-    packet_timeout_seconds: 1.00
+    # Motion may arm at 5 Hz and tolerates a three-second complete-stream gap.
+    minimum_packet_rate_hz_for_motion: 5.0
+    packet_timeout_seconds: 3.00
     stop_on_rejected_packet: false
 
-    # Robot-state freshness is independent of Windows UDP freshness.
-    follower_state_timeout_seconds: 0.50
+    # Robot-state freshness is independent of Windows UDP freshness, but the
+    # Jetson/SDK is allowed a two-second transient stall.
+    follower_state_timeout_seconds: 2.00
 
     # Attended direction check: only J6 (leader ID 5) is reversed.
     joint_signs: [1.0, 1.0, 1.0, 1.0, 1.0, -1.0, 1.0]

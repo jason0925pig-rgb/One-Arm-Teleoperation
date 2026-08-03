@@ -413,6 +413,9 @@ try {
         ),
         "--udp-target", $UbuntuUdpTarget,
         "--udp-bind-host", $windowsSourceIp,
+        # Keep the recorder alive across serial dropouts. The Ubuntu motion
+        # watchdog still stops the robot after three seconds without packets.
+        "--max-consecutive-incomplete", "0",
         "--deadman",
         "--activation-file", $script:ReadyFile,
         "--session-path-file", $script:SenderSessionPathFile,

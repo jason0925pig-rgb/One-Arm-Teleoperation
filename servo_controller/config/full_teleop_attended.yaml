@@ -15,19 +15,17 @@ safe_one_arm_servo:
     enable_robot_on_arm: false
     disable_robot_on_disarm: false
 
-    # The bridge stops after one second without a valid complete leader scan.
-    # This independent execution watchdog closes the servo gate 100 ms later
-    # if the bridge STOP message itself is lost.
-    command_timeout_seconds: 1.10
-    feedback_timeout_seconds: 0.50
+    # Tolerate short serial/network and robot-status stalls during attended
+    # collection. Explicit STOP, robot faults and joint limits remain active.
+    command_timeout_seconds: 3.25
+    feedback_timeout_seconds: 2.00
     control_rate_hz: 125.0
     state_rate_hz: 20.0
     control_deadline_warning_factor: 1.5
-    # get_robot_status can occasionally block the single SDK session for
-    # 100-200 ms. One such outlier must not disable motion before the first
-    # target arrives. Two consecutive gaps above 250 ms still force STOP.
-    control_deadline_abort_seconds: 0.25
-    control_deadline_abort_consecutive_misses: 2
+    # The Jetson/SDK occasionally blocks for several hundred milliseconds.
+    # Require three consecutive stalls above 750 ms before disarming.
+    control_deadline_abort_seconds: 0.75
+    control_deadline_abort_consecutive_misses: 3
     require_single_command_publisher: true
 
     joint_lower_limits: [-6.2832, -1.8325, -6.2832, -2.5307, -6.2832, -1.8325, -6.2832]
@@ -61,4 +59,4 @@ safe_gripper_controller:
     closed_speed: 75
     closed_force: 25
     allowed_alarm_mask: 32
-    movement_timeout_seconds: 4.0
+    movement_timeout_seconds: 8.0

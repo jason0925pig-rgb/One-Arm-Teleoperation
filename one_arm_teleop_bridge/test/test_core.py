@@ -3,11 +3,13 @@ import time
 import unittest
 
 from one_arm_teleop_bridge.core import (
+    JointPulseDropoutGuard,
     LeaderSignalFilter,
     MappingConfig,
     MultiJointUnwrapper,
     OffsetAbsoluteMapper,
     PacketError,
+    PersistentJointDropoutError,
     SafetyError,
     StopFrame,
     parse_leader_packet,
@@ -165,6 +167,31 @@ class ProtocolTests(unittest.TestCase):
 
 
 class FilterAndMappingTests(unittest.TestCase):
+    def test_joint_dropout_holds_only_bad_axis_and_recovers(self):
+        guard = JointPulseDropoutGuard(500, 2500, hold_seconds=10.0)
+        first, held = guard.update((600, 700, 800, 900, 1000, 1100, 1200), 1.0)
+        self.assertEqual(first[2], 800)
+        self.assertEqual(held, ())
+
+        second, held = guard.update((610, 710, 0, 910, 1010, 1110, 1210), 2.0)
+        self.assertEqual(second, (610, 710, 800, 910, 1010, 1110, 1210))
+        self.assertEqual(held, (2,))
+
+        recovered, held = guard.update(
+            (620, 720, 520, 920, 1020, 1120, 1220), 3.0
+        )
+        self.assertEqual(recovered[2], 520)
+        self.assertEqual(held, ())
+
+    def test_joint_dropout_requires_good_sample_and_remains_bounded(self):
+        guard = JointPulseDropoutGuard(500, 2500, hold_seconds=3.0)
+        with self.assertRaises(SafetyError):
+            guard.update((600, 700, 0, 900, 1000, 1100, 1200), 1.0)
+
+        guard.update((600, 700, 800, 900, 1000, 1100, 1200), 2.0)
+        with self.assertRaises(PersistentJointDropoutError):
+            guard.update((600, 700, 0, 900, 1000, 1100, 1200), 5.1)
+
     def test_filter_rejects_short_spike(self):
         signal_filter = LeaderSignalFilter(median_window=3)
         self.assertEqual(signal_filter.update((100.0,) * 7)[0], 100.0)

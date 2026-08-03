@@ -249,6 +249,74 @@ class MultiJointUnwrapper:
         return tuple(result)
 
 
+class PersistentJointDropoutError(SafetyError):
+    """A leader joint stayed invalid beyond the configured hold window."""
+
+
+class JointPulseDropoutGuard:
+    """Hold only an invalid joint at its last good pulse for a bounded time."""
+
+    def __init__(
+        self,
+        minimum_pulse: int,
+        maximum_pulse: int,
+        hold_seconds: float,
+        joint_count: int = JOINT_COUNT,
+    ):
+        if minimum_pulse >= maximum_pulse:
+            raise ValueError("minimum_pulse must be below maximum_pulse")
+        if not math.isfinite(hold_seconds) or hold_seconds < 0.0:
+            raise ValueError("hold_seconds must be finite and non-negative")
+        self.minimum_pulse = minimum_pulse
+        self.maximum_pulse = maximum_pulse
+        self.hold_seconds = hold_seconds
+        self.joint_count = joint_count
+        self.last_valid: list[int | None] = [None] * joint_count
+        self.last_valid_at: list[float | None] = [None] * joint_count
+
+    def reset(self) -> None:
+        self.last_valid = [None] * self.joint_count
+        self.last_valid_at = [None] * self.joint_count
+
+    def update(
+        self,
+        raw_pulses: tuple[int, ...],
+        now_seconds: float,
+    ) -> tuple[tuple[int, ...], tuple[int, ...]]:
+        if len(raw_pulses) != self.joint_count:
+            raise SafetyError("unexpected joint count during dropout handling")
+        if not math.isfinite(now_seconds):
+            raise ValueError("now_seconds must be finite")
+
+        output: list[int] = []
+        held_indices: list[int] = []
+        for index, pulse in enumerate(raw_pulses):
+            if self.minimum_pulse <= pulse <= self.maximum_pulse:
+                self.last_valid[index] = pulse
+                self.last_valid_at[index] = now_seconds
+                output.append(pulse)
+                continue
+
+            previous = self.last_valid[index]
+            previous_at = self.last_valid_at[index]
+            if previous is None or previous_at is None:
+                raise SafetyError(
+                    f"leader joint {index + 1} has no valid pulse to hold "
+                    f"after receiving {pulse}"
+                )
+            invalid_age = max(0.0, now_seconds - previous_at)
+            if invalid_age > self.hold_seconds:
+                raise PersistentJointDropoutError(
+                    f"leader joint {index + 1} pulse {pulse} remained outside "
+                    f"[{self.minimum_pulse}, {self.maximum_pulse}] for "
+                    f"{invalid_age:.2f}s"
+                )
+            output.append(previous)
+            held_indices.append(index)
+
+        return tuple(output), tuple(held_indices)
+
+
 class LeaderSignalFilter:
     """Median spike rejection, optional low-pass, then output deadband."""
 

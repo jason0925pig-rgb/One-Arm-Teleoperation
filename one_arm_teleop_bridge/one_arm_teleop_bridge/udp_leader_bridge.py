@@ -16,11 +16,13 @@ from std_srvs.srv import SetBool
 
 from .core import (
     JOINT_COUNT,
+    JointPulseDropoutGuard,
     LeaderSignalFilter,
     MappingConfig,
     MultiJointUnwrapper,
     OffsetAbsoluteMapper,
     PacketError,
+    PersistentJointDropoutError,
     SafetyError,
     StopFrame,
     parse_teleop_packet,
@@ -44,6 +46,7 @@ class UdpLeaderBridge(Node):
         self.declare_parameter("leader_period_pulses", 2000)
         self.declare_parameter("leader_min_valid_pulse", 500)
         self.declare_parameter("leader_max_valid_pulse", 2500)
+        self.declare_parameter("leader_joint_dropout_hold_seconds", 0.0)
         self.declare_parameter("max_leader_step_pulses", 800.0)
         self.declare_parameter("median_filter_window", 1)
         self.declare_parameter("low_pass_alpha", 1.0)
@@ -138,6 +141,13 @@ class UdpLeaderBridge(Node):
             raise ValueError(
                 "leader_min_valid_pulse must be below leader_max_valid_pulse"
             )
+        self.joint_dropout_guard = JointPulseDropoutGuard(
+            self.leader_min_valid_pulse,
+            self.leader_max_valid_pulse,
+            float(
+                self.get_parameter("leader_joint_dropout_hold_seconds").value
+            ),
+        )
         self.signal_filter = LeaderSignalFilter(
             median_window=int(self.get_parameter("median_filter_window").value),
             low_pass_alpha=float(self.get_parameter("low_pass_alpha").value),
@@ -163,6 +173,9 @@ class UdpLeaderBridge(Node):
         self.rejected_packets = 0
         self.last_rejection_reason = "none"
         self.stop_requests = 0
+        self.held_joint_samples = 0
+        self.last_held_joint_indices: tuple[int, ...] = ()
+        self.last_dropout_warning = 0.0
 
         bind_host = str(self.get_parameter("bind_host").value)
         bind_port = int(self.get_parameter("bind_port").value)
@@ -408,18 +421,6 @@ class UdpLeaderBridge(Node):
                     and frame.sequence <= self.last_sequence
                 ):
                     raise PacketError("sequence is not newer than the previous packet")
-                if not self.gripper_only_mode:
-                    for index, pulse in enumerate(frame.joint_pulses):
-                        if not (
-                            self.leader_min_valid_pulse
-                            <= pulse
-                            <= self.leader_max_valid_pulse
-                        ):
-                            raise PacketError(
-                                f"leader joint {index + 1} pulse {pulse} is "
-                                f"outside [{self.leader_min_valid_pulse}, "
-                                f"{self.leader_max_valid_pulse}]"
-                            )
                 if new_session:
                     self.current_session = frame.session_id
                     self.session_sender_monotonic_origin_ns = sender_origin_ns
@@ -428,10 +429,27 @@ class UdpLeaderBridge(Node):
                     self.accepted_packet_times.clear()
                     self.unwrapper.reset()
                     self.signal_filter.reset()
+                    self.joint_dropout_guard.reset()
                     if self.mapping_enabled:
                         self._request_stop("leader session changed")
-                leader_position = self.unwrapper.update(frame.joint_pulses)
+                sanitized_pulses = frame.joint_pulses
+                held_joint_indices: tuple[int, ...] = ()
+                if not self.gripper_only_mode:
+                    sanitized_pulses, held_joint_indices = (
+                        self.joint_dropout_guard.update(
+                            frame.joint_pulses,
+                            received_monotonic_ns / 1_000_000_000.0,
+                        )
+                    )
+                leader_position = self.unwrapper.update(sanitized_pulses)
                 filtered_position = self.signal_filter.update(leader_position)
+            except PersistentJointDropoutError as exc:
+                self.rejected_packets += 1
+                self.consecutive_accepted_packets = 0
+                self.last_rejection_reason = str(exc).replace(";", ",")
+                if self.mapping_enabled:
+                    self._request_stop(str(exc))
+                continue
             except (PacketError, SafetyError) as exc:
                 self.rejected_packets += 1
                 self.consecutive_accepted_packets = 0
@@ -458,6 +476,18 @@ class UdpLeaderBridge(Node):
             self.last_deadman_held = frame.deadman_held
             self.last_packet_age_seconds = packet_age
             received_at = time.monotonic()
+            self.last_held_joint_indices = held_joint_indices
+            if held_joint_indices:
+                self.held_joint_samples += 1
+                if received_at - self.last_dropout_warning >= 1.0:
+                    names = ",".join(
+                        str(index + 1) for index in held_joint_indices
+                    )
+                    self.get_logger().warn(
+                        "Holding last valid leader pulse for joint(s) "
+                        f"{names}; other joints and gripper remain active"
+                    )
+                    self.last_dropout_warning = received_at
             self.last_leader_received = received_at
             self.accepted_packet_times.append(received_at)
             raw_msg = Float64MultiArray()
@@ -537,6 +567,9 @@ class UdpLeaderBridge(Node):
             f"accepted_packets={self.accepted_packets};"
             f"consecutive_accepted_packets={self.consecutive_accepted_packets};"
             f"rejected_packets={self.rejected_packets};"
+            f"held_joint_samples={self.held_joint_samples};"
+            "held_joints="
+            f"{','.join(str(index + 1) for index in self.last_held_joint_indices) or 'none'};"
             f"last_rejection={self.last_rejection_reason};"
             f"stop_requests={self.stop_requests}"
         )
