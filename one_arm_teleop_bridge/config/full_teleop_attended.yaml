@@ -47,9 +47,8 @@ udp_leader_bridge:
     # Robot-state freshness is independent of Windows UDP freshness.
     follower_state_timeout_seconds: 0.50
 
-    # Attended direction checks: J2 (leader ID 1) and J6 (leader ID 5)
-    # rotate opposite to the Armstrong joint convention.
-    joint_signs: [1.0, -1.0, 1.0, 1.0, 1.0, -1.0, 1.0]
+    # Attended direction check: only J6 (leader ID 5) is reversed.
+    joint_signs: [1.0, 1.0, 1.0, 1.0, 1.0, -1.0, 1.0]
     scale_rad_per_pulse: [0.00235619449, 0.00235619449, 0.00235619449, 0.00235619449, 0.00235619449, 0.00235619449, 0.00235619449]
     joint_lower_limits: [-6.2832, -1.8325, -6.2832, -2.5307, -6.2832, -1.8325, -6.2832]
     joint_upper_limits: [6.2832, 1.8325, 6.2832, 0.5235, 6.2832, 1.8325, 6.2832]
