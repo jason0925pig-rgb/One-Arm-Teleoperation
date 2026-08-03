@@ -35,6 +35,10 @@ public:
         closed_position_ = declare_parameter<int>("closed_position", 0);
         speed_ = declare_parameter<int>("speed", 20);
         force_ = declare_parameter<int>("force", 20);
+        open_speed_ = declare_parameter<int>("open_speed", speed_);
+        open_force_ = declare_parameter<int>("open_force", force_);
+        closed_speed_ = declare_parameter<int>("closed_speed", speed_);
+        closed_force_ = declare_parameter<int>("closed_force", force_);
         allowed_alarm_mask_ =
             declare_parameter<int>("allowed_alarm_mask", 0);
         movement_timeout_seconds_ =
@@ -110,8 +114,12 @@ private:
             reason = "open and closed positions must differ";
             return false;
         }
-        if (speed_ < 0 || speed_ > 100 || force_ < 0 || force_ > 100) {
-            reason = "speed and force must be within 0..100";
+        if (speed_ < 0 || speed_ > 100 || force_ < 0 || force_ > 100 ||
+            open_speed_ < 0 || open_speed_ > 100 ||
+            open_force_ < 0 || open_force_ > 100 ||
+            closed_speed_ < 0 || closed_speed_ > 100 ||
+            closed_force_ < 0 || closed_force_ > 100) {
+            reason = "all speed and force parameters must be within 0..100";
             return false;
         }
         if (allowed_alarm_mask_ < 0 || allowed_alarm_mask_ > 0xFFFF) {
@@ -234,6 +242,8 @@ private:
         requested_open_ = requested_open;
         has_requested_state_ = true;
         target_position_ = requested_open_ ? open_position_ : closed_position_;
+        command_speed_ = requested_open_ ? open_speed_ : closed_speed_;
+        command_force_ = requested_open_ ? open_force_ : closed_force_;
         contact_ = false;
         feedback_position_valid_ = false;
         try {
@@ -248,7 +258,8 @@ private:
                     if (!zx_alarm_allowed(last_alarm_, reason)) {
                         throw std::runtime_error(reason);
                     }
-                    zx_->temp_move(target_position_, speed_, force_);
+                    zx_->temp_move(
+                        target_position_, command_speed_, command_force_);
                 } else {
                     throw std::runtime_error("gripper hardware is not initialized");
                 }
@@ -262,7 +273,9 @@ private:
             reason =
                 std::string("gripper command accepted: requested_open=") +
                 (requested_open_ ? "true" : "false") +
-                " target_position=" + std::to_string(target_position_);
+                " target_position=" + std::to_string(target_position_) +
+                " speed=" + std::to_string(command_speed_) +
+                " force=" + std::to_string(command_force_);
             return true;
         } catch (const std::exception &error) {
             enabled_ = false;
@@ -423,6 +436,8 @@ private:
             << ";moving=" << moving_
             << ";requested_open=" << requested_open_
             << ";position=" << current_position_
+            << ";command_speed=" << command_speed_
+            << ";command_force=" << command_force_
             << ";position_source="
             << (feedback_position_valid_
                     ? "measured"
@@ -446,6 +461,10 @@ private:
     int closed_position_{0};
     int speed_{20};
     int force_{20};
+    int open_speed_{20};
+    int open_force_{20};
+    int closed_speed_{20};
+    int closed_force_{20};
     int allowed_alarm_mask_{0};
     uint16_t last_alarm_{0};
     double movement_timeout_seconds_{2.0};
@@ -457,6 +476,8 @@ private:
     bool contact_{false};
     int target_position_{0};
     int current_position_{0};
+    int command_speed_{0};
+    int command_force_{0};
     std::chrono::steady_clock::time_point movement_started_{};
     std::unique_ptr<DH_Gripper> dh_;
     std::unique_ptr<ZX_gripper> zx_;

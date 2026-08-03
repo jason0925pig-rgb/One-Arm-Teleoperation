@@ -36,12 +36,12 @@ udp_leader_bridge:
     # Windows can lead Ubuntu by about 0.5 s. Keep timestamp validation
     # enabled while allowing the measured clock drift and network jitter.
     max_future_skew_seconds: 1.00
-    # ZLink2 currently delivers about 15-17 valid complete frames per second.
-    # On the mandatory wired path, seven consecutive missing frames are
-    # enough to stop mapping. This tolerates one serial-poll outlier without
-    # retaining the old 750 ms network exposure.
+    # ZLink2 currently delivers about 15 valid complete frames per second.
+    # A failed scan can take roughly 390 ms while per-ID serial timeouts run,
+    # so one second tolerates two isolated slow scans without hiding a
+    # sustained leader-bus failure.
     minimum_packet_rate_hz_for_motion: 10.0
-    packet_timeout_seconds: 0.40
+    packet_timeout_seconds: 1.00
     stop_on_rejected_packet: false
 
     # Robot-state freshness is independent of Windows UDP freshness.

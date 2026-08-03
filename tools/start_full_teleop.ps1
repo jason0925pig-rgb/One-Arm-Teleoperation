@@ -20,7 +20,10 @@ param(
     [switch]$NoCameraPreview,
     [string]$SshIdentityFile = "$env:USERPROFILE\.ssh\one_arm_teleop_ed25519",
     [ValidateRange(1.0, 100.0)]
-    [double]$RateHz = 100.0,
+    # Eight sequential PRAD transactions sustain about 15-17 complete scans
+    # per second on this ZLink2 bus. Requesting 100 Hz leaves no recovery idle
+    # time and can make several downstream servo IDs disappear mid-session.
+    [double]$RateHz = 15.0,
     [string]$SessionName = "full_teleop",
     [string]$Task = "",
     [string]$Operator = "Lucky",

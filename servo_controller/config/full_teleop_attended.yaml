@@ -15,10 +15,10 @@ safe_one_arm_servo:
     enable_robot_on_arm: false
     disable_robot_on_disarm: false
 
-    # The bridge stops first at 400 ms without a valid wired leader packet.
-    # This independent execution watchdog closes the servo gate at 450 ms if
-    # a STOP message is itself lost. Robot feedback has its own 500 ms limit.
-    command_timeout_seconds: 0.45
+    # The bridge stops after one second without a valid complete leader scan.
+    # This independent execution watchdog closes the servo gate 100 ms later
+    # if the bridge STOP message itself is lost.
+    command_timeout_seconds: 1.10
     feedback_timeout_seconds: 0.50
     control_rate_hz: 125.0
     state_rate_hz: 20.0
@@ -53,5 +53,12 @@ safe_gripper_controller:
     closed_position: 12000
     speed: 75
     force: 25
+    # Opening must overcome the CTAG2F120 mechanism's own friction. The
+    # machine's proven Terminal-3 initialization uses 100% speed / 60% force.
+    # Closing remains limited so an object is not gripped with that force.
+    open_speed: 100
+    open_force: 60
+    closed_speed: 75
+    closed_force: 25
     allowed_alarm_mask: 32
     movement_timeout_seconds: 4.0
