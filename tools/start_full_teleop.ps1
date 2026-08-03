@@ -265,6 +265,25 @@ $script:WindowsSourceIp = $windowsSourceIp
 Assert-MotionNetworkPath `
     -Target $UbuntuUdpTarget `
     -SourceIp $windowsSourceIp
+
+Write-Host "Checking all eight ZLink2 encoder IDs before remote startup..."
+& $recorder `
+    "--port" $ComPort `
+    "--rate-hz" $RateHz.ToString(
+        [System.Globalization.CultureInfo]::InvariantCulture
+    ) `
+    "--probe-only"
+if ($LASTEXITCODE -ne 0) {
+    $message = (
+        "ZLink2 eight-ID preflight failed. The camera, dataset recorder, " +
+        "Ubuntu bridge, gripper, and arm were not started. Check the leader " +
+        "bus power and cabling, then retry."
+    )
+    Write-Host ""
+    Write-Host ("ERROR: " + $message) -ForegroundColor Red
+    exit 2
+}
+
 if ([string]::IsNullOrEmpty($Task)) {
     $Task = Read-Host "Task prompt (exact text stored in LeRobot)"
 }

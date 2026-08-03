@@ -1059,6 +1059,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="validate mapping and list serial ports without opening hardware",
     )
+    parser.add_argument(
+        "--probe-only",
+        action="store_true",
+        help=(
+            "open the adapter, query all configured servo IDs once with PRAD, "
+            "then exit without creating a recording"
+        ),
+    )
     return parser
 
 
@@ -1139,6 +1147,12 @@ def main() -> int:
                     f"startup check failed; no reply from servo IDs {missing}"
                 )
             print(f"Startup check passed: {len(probe.pulses)}/8 IDs replied.")
+            if args.probe_only:
+                print(
+                    "Probe-only check complete; no recording or UDP packet "
+                    "was created."
+                )
+                return 0
             record_session(
                 args,
                 port,
