@@ -72,10 +72,19 @@ fi
   --index-url "${TORCH_INDEX}" \
   "${TORCH_SPEC}" \
   "${TORCHVISION_SPEC}"
+if [[ "${LEROBOT_VERSION}" == "0.4.4" ]]; then
+  # 0.4.4 already includes the dataset package and does not define a
+  # separately named `dataset` extra.  Asking for that extra only produces a
+  # misleading warning on the Jetson's Python 3.10 environment.
+  LEROBOT_SPEC="lerobot==${LEROBOT_VERSION}"
+else
+  LEROBOT_SPEC="lerobot[dataset]==${LEROBOT_VERSION}"
+fi
 "${VENV}/bin/python" -m pip install \
   --index-url "${PYPI_INDEX}" \
-  "lerobot[dataset]==${LEROBOT_VERSION}"
+  "${LEROBOT_SPEC}"
 EXTRA_PACKAGES=(
+  "numpy>=2.0,<2.3" \
   "pandas>=2.2,<3" \
   "scipy>=1.13,<2" \
   "setuptools>=71,<80" \
