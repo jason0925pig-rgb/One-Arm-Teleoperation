@@ -12,6 +12,9 @@ ROS_DISTRO_NAME="${ROS_DISTRO:-jazzy}"
 ROS_SETUP="/opt/ros/${ROS_DISTRO_NAME}/setup.bash"
 WORKSPACE_SETUP="${PROJECT_ROOT}/install/setup.bash"
 RUNTIME_DIR="/tmp/one_arm_teleop_full_${UID}"
+MANUAL_RUNTIME_DIR="/tmp/one_arm_manual_mode_${UID}"
+MANUAL_LOCK_DIR="${MANUAL_RUNTIME_DIR}.lock"
+MANUAL_PID_FILE="${MANUAL_RUNTIME_DIR}/arm.pid"
 GRIPPER_DEVICE="${ONE_ARM_GRIPPER_DEVICE:-/dev/serial/by-id/usb-1a86_USB_Single_Serial_5ABB000800-if00}"
 ARM_CONFIG="${PROJECT_ROOT}/servo_controller/config/full_teleop_attended.yaml"
 BRIDGE_CONFIG="${PROJECT_ROOT}/one_arm_teleop_bridge/config/full_teleop_attended.yaml"
@@ -212,6 +215,82 @@ try_set_bool() {
   }
 }
 
+stop_manual_mode_for_handoff() {
+  if [[ ! -s "${MANUAL_PID_FILE}" ]]; then
+    # Remove only a stale lock created by our own manual-mode launcher.
+    if pgrep -f '[r]ight_arm_manual_mode.sh' >/dev/null 2>&1; then
+      echo "ERROR: right-arm manual mode is still starting; stop it or retry shortly." >&2
+      return 1
+    fi
+    if [[ -d "${MANUAL_LOCK_DIR}" ]]; then
+      rmdir -- "${MANUAL_LOCK_DIR}" 2>/dev/null || true
+    fi
+    return 0
+  fi
+
+  local manual_pid manual_command
+  manual_pid="$(<"${MANUAL_PID_FILE}")"
+  if [[ ! "${manual_pid}" =~ ^[0-9]+$ ]] ||
+     ! kill -0 "${manual_pid}" 2>/dev/null; then
+    rm -f -- "${MANUAL_PID_FILE}"
+    rmdir -- "${MANUAL_LOCK_DIR}" 2>/dev/null || true
+    return 0
+  fi
+
+  manual_command="$(tr '\0' ' ' <"/proc/${manual_pid}/cmdline" 2>/dev/null || true)"
+  if [[ "${manual_command}" != *"safe_one_arm_servo"* ]] ||
+     [[ "${manual_command}" != *"hardware_motion_authorized:=false"* ]]; then
+    echo "ERROR: manual-mode PID file points to an unexpected process:" >&2
+    ps -fp "${manual_pid}" >&2 || true
+    return 1
+  fi
+
+  echo "MANUAL_MODE_HANDOFF: stopping drag/manual mode before full teleoperation."
+  echo "The arm will be disabled and powered off briefly; no motion command is sent."
+  wait_for_service /right_arm/set_drag_enabled 5
+  wait_for_service /right_arm/set_motion_enabled 5
+  wait_for_service /right_arm/set_robot_enabled 5
+  wait_for_service /right_arm/set_powered_on 5
+  try_set_bool /right_arm/set_drag_enabled false
+  try_set_bool /right_arm/set_motion_enabled false
+  try_set_bool /right_arm/set_robot_enabled false
+  wait_status_field "robot_enabled=0" 15
+  try_set_bool /right_arm/set_powered_on false
+  wait_status_field "robot_powered_on=0" 20
+
+  kill -INT -- "-${manual_pid}" 2>/dev/null ||
+    kill -INT "${manual_pid}" 2>/dev/null || true
+  local deadline=$((SECONDS + 8))
+  while kill -0 "${manual_pid}" 2>/dev/null && (( SECONDS < deadline )); do
+    sleep 0.10
+  done
+  if kill -0 "${manual_pid}" 2>/dev/null; then
+    kill -TERM -- "-${manual_pid}" 2>/dev/null ||
+      kill -TERM "${manual_pid}" 2>/dev/null || true
+    sleep 1
+  fi
+  if kill -0 "${manual_pid}" 2>/dev/null; then
+    echo "ERROR: manual-mode process did not exit: pid=${manual_pid}" >&2
+    return 1
+  fi
+
+  # If the interactive wrapper is still alive, let its EXIT cleanup finish
+  # before a new node exposes services with the same names.
+  deadline=$((SECONDS + 20))
+  while pgrep -f '[r]ight_arm_manual_mode.sh' >/dev/null 2>&1 &&
+        (( SECONDS < deadline )); do
+    sleep 0.20
+  done
+  if pgrep -f '[r]ight_arm_manual_mode.sh' >/dev/null 2>&1; then
+    echo "ERROR: manual-mode wrapper did not finish its shutdown." >&2
+    return 1
+  fi
+
+  rm -f -- "${MANUAL_PID_FILE}"
+  rmdir -- "${MANUAL_LOCK_DIR}" 2>/dev/null || true
+  echo "MANUAL_MODE_HANDOFF_COMPLETE"
+}
+
 start_component() {
   local name="$1"
   shift
@@ -358,6 +437,7 @@ start_stack() {
     echo "ERROR: this launcher's stack is already running. Run stop first." >&2
     exit 3
   fi
+  stop_manual_mode_for_handoff
   known_conflicts
   [[ -r "${ARM_CONFIG}" ]] || {
     echo "ERROR: missing config: ${ARM_CONFIG}" >&2
