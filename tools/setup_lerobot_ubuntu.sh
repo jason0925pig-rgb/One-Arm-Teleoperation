@@ -108,7 +108,11 @@ import pyarrow
 import rclpy
 import rosbag2_py
 import torch
-from lerobot.datasets import LeRobotDataset
+try:
+    from lerobot.datasets import LeRobotDataset
+except ImportError:
+    # LeRobot 0.4.x keeps the public class in the implementation module.
+    from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
 torchcodec_version = "PyAV fallback"
 if os.environ.get("ONE_ARM_EXPECT_TORCHCODEC"):

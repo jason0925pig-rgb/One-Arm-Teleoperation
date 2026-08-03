@@ -742,7 +742,12 @@ def main() -> int:
         return 0
 
     try:
-        from lerobot.datasets import LeRobotDataset
+        try:
+            from lerobot.datasets import LeRobotDataset
+        except ImportError:
+            # LeRobot 0.4.x exposes the class from this implementation
+            # module while newer releases re-export it from the package.
+            from lerobot.datasets.lerobot_dataset import LeRobotDataset
     except ImportError as exc:
         raise SystemExit(
             "LeRobot is not installed. Install lerobot>=0.4.0 in the "
@@ -751,11 +756,27 @@ def main() -> int:
 
     info_path = dataset_root / "meta" / "info.json"
     if info_path.exists():
-        dataset = LeRobotDataset.resume(
-            repo_id=args.repo_id,
-            root=dataset_root,
-            image_writer_threads=args.image_writer_threads,
-        )
+        if hasattr(LeRobotDataset, "resume"):
+            dataset = LeRobotDataset.resume(
+                repo_id=args.repo_id,
+                root=dataset_root,
+                image_writer_threads=args.image_writer_threads,
+            )
+        else:
+            # LeRobot 0.4.x resumes an on-disk v3 dataset through the normal
+            # constructor.  Recording state must then be initialized before
+            # add_frame() is used for the next episode.
+            dataset = LeRobotDataset(
+                repo_id=args.repo_id,
+                root=dataset_root,
+                batch_encoding_size=1,
+            )
+            if args.image_writer_threads:
+                dataset.start_image_writer(
+                    num_processes=0,
+                    num_threads=args.image_writer_threads,
+                )
+            dataset.episode_buffer = dataset.create_episode_buffer()
         if int(dataset.fps) != fps:
             raise SystemExit(
                 f"dataset FPS is {dataset.fps}, episode requests {fps}"
@@ -864,7 +885,10 @@ def main() -> int:
         dataset.save_episode()
         dataset.finalize()
     except Exception:
-        if dataset.has_pending_frames():
+        if (
+            dataset.episode_buffer is not None
+            and int(dataset.episode_buffer.get("size", 0)) > 0
+        ):
             dataset.clear_episode_buffer(delete_images=True)
         dataset.finalize()
         message_store.close()
