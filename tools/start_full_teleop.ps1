@@ -80,6 +80,7 @@ $script:RemoteStackStarted = $false
 $script:SenderProcess = $null
 $script:ReadyFile = $null
 $script:SenderSessionPathFile = $null
+$script:SenderLogFile = $null
 $script:NormalSenderExit = $false
 $script:LaunchFailed = $false
 $script:DatasetCaptureStarted = $false
@@ -219,6 +220,55 @@ function Remove-WindowsSenderSession {
     Write-Host "WINDOWS_SENDER_SESSION_DISCARDED=$sessionDirectory"
 }
 
+function Show-SenderLogTail {
+    if (
+        $null -eq $script:SenderLogFile -or
+        -not (Test-Path -LiteralPath $script:SenderLogFile -PathType Leaf)
+    ) {
+        Write-Host "No ZLink2 sender log file was created."
+        return
+    }
+    Write-Host ""
+    Write-Host "--- ZLink2 sender log (last 80 lines) ---"
+    Get-Content -LiteralPath $script:SenderLogFile -Tail 80
+}
+
+function Wait-SenderBaselineCaptured {
+    param([int]$TimeoutSeconds = 180)
+
+    Write-Host ""
+    Write-Host "Waiting for the ZLink2 sender window to capture Enter/baseline..."
+    Write-Host "If you do not see that sender window, press Ctrl+C here and tell me."
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        if (
+            $null -ne $script:SenderSessionPathFile -and
+            (Test-Path -LiteralPath $script:SenderSessionPathFile -PathType Leaf)
+        ) {
+            $reported = (
+                Get-Content -LiteralPath $script:SenderSessionPathFile -Raw
+            ).Trim()
+            if (-not [string]::IsNullOrWhiteSpace($reported)) {
+                Write-Host "SENDER_BASELINE_CAPTURED=$reported"
+                return
+            }
+        }
+        if ($null -ne $script:SenderProcess -and $script:SenderProcess.HasExited) {
+            Show-SenderLogTail
+            throw (
+                "ZLink2 sender exited before capturing Enter/baseline " +
+                "(exit code $($script:SenderProcess.ExitCode))."
+            )
+        }
+        Start-Sleep -Milliseconds 250
+    }
+    Show-SenderLogTail
+    throw (
+        "ZLink2 sender did not capture Enter/baseline within " +
+        "$TimeoutSeconds seconds. Click the sender window and press Enter."
+    )
+}
+
 function ConvertTo-Utf8Base64 {
     param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
     return [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Value))
@@ -337,11 +387,17 @@ $script:ReadyFile = Join-Path `
 $script:SenderSessionPathFile = Join-Path `
     ([System.IO.Path]::GetTempPath()) `
     ("one_arm_teleop_sender_session_{0}.txt" -f $PID)
+$script:SenderLogFile = Join-Path `
+    ([System.IO.Path]::GetTempPath()) `
+    ("one_arm_teleop_sender_{0}.log" -f $PID)
 if (Test-Path -LiteralPath $script:ReadyFile) {
     Remove-Item -LiteralPath $script:ReadyFile -Force
 }
 if (Test-Path -LiteralPath $script:SenderSessionPathFile) {
     Remove-Item -LiteralPath $script:SenderSessionPathFile -Force
+}
+if (Test-Path -LiteralPath $script:SenderLogFile) {
+    Remove-Item -LiteralPath $script:SenderLogFile -Force
 }
 
 Write-Host "============================================================"
@@ -427,13 +483,26 @@ try {
     $quotedRecorder = "'" + ($recorder -replace "'", "''") + "'"
     $senderCommand = @'
 $Host.UI.RawUI.WindowTitle = "ZLink2 Teleoperation Sender"
-& __RECORDER__ __ARGUMENTS__
-exit $LASTEXITCODE
+$ErrorActionPreference = "Continue"
+try {
+    & __RECORDER__ __ARGUMENTS__ 2>&1 | Tee-Object -FilePath '__SENDER_LOG__'
+    $code = $LASTEXITCODE
+}
+catch {
+    $_ | Out-String | Tee-Object -FilePath '__SENDER_LOG__' -Append
+    $code = 1
+}
+Write-Host "ZLINK2_SENDER_EXIT_CODE=$code"
+exit $code
 '@
     $senderCommand = $senderCommand.Replace("__RECORDER__", $quotedRecorder)
     $senderCommand = $senderCommand.Replace(
         "__ARGUMENTS__",
         ($quotedArguments -join " ")
+    )
+    $senderCommand = $senderCommand.Replace(
+        "__SENDER_LOG__",
+        ($script:SenderLogFile -replace "'", "''")
     )
     $encodedSenderCommand = [Convert]::ToBase64String(
         [Text.Encoding]::Unicode.GetBytes($senderCommand)
@@ -454,8 +523,10 @@ exit $LASTEXITCODE
         -WindowStyle Normal `
         -PassThru
 
+    Wait-SenderBaselineCaptured
+
     Write-Host ""
-    Write-Host "Stage 2 is waiting for Enter/baseline, fresh UDP preview, and robot checks."
+    Write-Host "Stage 2 is waiting for fresh UDP preview and robot checks."
     Write-Host "After these checks, the robot WILL be powered and enabled; the follower gripper"
     Write-Host "will first open to 2000, then the arm enters servo mode,"
     Write-Host "but it still receives no motion target until you press Space."
@@ -482,6 +553,7 @@ catch {
     $script:LaunchFailed = $true
     Write-Host ""
     Write-Host ("ERROR: " + $_.Exception.Message) -ForegroundColor Red
+    Show-SenderLogTail
 }
 finally {
     if (
@@ -529,7 +601,18 @@ if ($script:EpisodeRecordingStarted) {
         if ($userDiscardRequested) {
             Invoke-CheckedSsh `
                 "cd $remoteProject && ${remoteEnvironment}bash tools/ubuntu_dataset_episode.sh discard"
-            Remove-WindowsSenderSession
+            if (
+                $null -ne $script:SenderSessionPathFile -and
+                (Test-Path -LiteralPath $script:SenderSessionPathFile -PathType Leaf)
+            ) {
+                Remove-WindowsSenderSession
+            }
+            else {
+                Write-Host (
+                    "WINDOWS_SENDER_SESSION_NOT_CREATED; no local sender " +
+                    "recording directory needs deletion."
+                )
+            }
             Write-Host "EPISODE_DISCARDED_NO_DATA_KEPT"
         }
         else {
