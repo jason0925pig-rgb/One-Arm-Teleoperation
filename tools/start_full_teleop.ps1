@@ -81,6 +81,7 @@ $script:SenderProcess = $null
 $script:ReadyFile = $null
 $script:SenderSessionPathFile = $null
 $script:SenderLogFile = $null
+$script:SenderScriptFile = $null
 $script:NormalSenderExit = $false
 $script:LaunchFailed = $false
 $script:DatasetCaptureStarted = $false
@@ -269,6 +270,39 @@ function Wait-SenderBaselineCaptured {
     )
 }
 
+function Wait-SenderPreviewFrames {
+    param([int]$TimeoutSeconds = 20)
+
+    Write-Host "Waiting for the ZLink2 sender to produce live preview frames..."
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        if (
+            $null -ne $script:SenderLogFile -and
+            (Test-Path -LiteralPath $script:SenderLogFile -PathType Leaf)
+        ) {
+            $tail = Get-Content -LiteralPath $script:SenderLogFile -Tail 40
+            if ($tail | Select-String -Pattern "frames=.*complete=" -Quiet) {
+                Write-Host "SENDER_PREVIEW_FRAMES_ACTIVE"
+                return
+            }
+        }
+        if ($null -ne $script:SenderProcess -and $script:SenderProcess.HasExited) {
+            Show-SenderLogTail
+            throw (
+                "ZLink2 sender exited before producing live preview frames " +
+                "(exit code $($script:SenderProcess.ExitCode))."
+            )
+        }
+        Start-Sleep -Milliseconds 250
+    }
+    Show-SenderLogTail
+    throw (
+        "ZLink2 sender captured baseline but did not produce live preview " +
+        "frames within $TimeoutSeconds seconds. Check COM port/output in " +
+        "the sender window."
+    )
+}
+
 function ConvertTo-Utf8Base64 {
     param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
     return [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Value))
@@ -390,6 +424,9 @@ $script:SenderSessionPathFile = Join-Path `
 $script:SenderLogFile = Join-Path `
     ([System.IO.Path]::GetTempPath()) `
     ("one_arm_teleop_sender_{0}.log" -f $PID)
+$script:SenderScriptFile = Join-Path `
+    ([System.IO.Path]::GetTempPath()) `
+    ("one_arm_teleop_sender_{0}.ps1" -f $PID)
 if (Test-Path -LiteralPath $script:ReadyFile) {
     Remove-Item -LiteralPath $script:ReadyFile -Force
 }
@@ -398,6 +435,9 @@ if (Test-Path -LiteralPath $script:SenderSessionPathFile) {
 }
 if (Test-Path -LiteralPath $script:SenderLogFile) {
     Remove-Item -LiteralPath $script:SenderLogFile -Force
+}
+if (Test-Path -LiteralPath $script:SenderScriptFile) {
+    Remove-Item -LiteralPath $script:SenderScriptFile -Force
 }
 
 Write-Host "============================================================"
@@ -481,35 +521,43 @@ try {
         "'" + ($argument -replace "'", "''") + "'"
     }
     $quotedRecorder = "'" + ($recorder -replace "'", "''") + "'"
+    $argumentArrayLiteral = "@(`n        " + ($quotedArguments -join ",`n        ") + "`n    )"
     $senderCommand = @'
 $Host.UI.RawUI.WindowTitle = "ZLink2 Teleoperation Sender"
 $ErrorActionPreference = "Continue"
+$logPath = '__SENDER_LOG__'
+"ZLINK2_SENDER_SCRIPT_STARTED=$(Get-Date -Format o)" |
+    Tee-Object -FilePath $logPath
+$recorder = __RECORDER__
+$arguments = __ARGUMENT_ARRAY__
 try {
-    & __RECORDER__ __ARGUMENTS__ 2>&1 | Tee-Object -FilePath '__SENDER_LOG__'
+    & $recorder @arguments 2>&1 | Tee-Object -FilePath $logPath -Append
     $code = $LASTEXITCODE
 }
 catch {
-    $_ | Out-String | Tee-Object -FilePath '__SENDER_LOG__' -Append
+    $_ | Out-String | Tee-Object -FilePath $logPath -Append
     $code = 1
 }
-Write-Host "ZLINK2_SENDER_EXIT_CODE=$code"
+"ZLINK2_SENDER_EXIT_CODE=$code" | Tee-Object -FilePath $logPath -Append
 exit $code
 '@
     $senderCommand = $senderCommand.Replace("__RECORDER__", $quotedRecorder)
     $senderCommand = $senderCommand.Replace(
-        "__ARGUMENTS__",
-        ($quotedArguments -join " ")
+        "__ARGUMENT_ARRAY__",
+        $argumentArrayLiteral
     )
     $senderCommand = $senderCommand.Replace(
         "__SENDER_LOG__",
         ($script:SenderLogFile -replace "'", "''")
     )
-    $encodedSenderCommand = [Convert]::ToBase64String(
-        [Text.Encoding]::Unicode.GetBytes($senderCommand)
-    )
+    Set-Content `
+        -LiteralPath $script:SenderScriptFile `
+        -Value $senderCommand `
+        -Encoding UTF8
 
     Write-Host ""
     Write-Host "A dedicated ZLink2 sender window will open now."
+    Write-Host "ZLink2 sender log: $script:SenderLogFile"
     Write-Host "In that window, place the leader arm comfortably and press Enter once."
     Write-Host "Do not press Space until it displays REMOTE STACK READY."
     $script:SenderProcess = Start-Process `
@@ -517,13 +565,14 @@ exit $code
         -ArgumentList @(
             "-NoProfile",
             "-ExecutionPolicy", "Bypass",
-            "-EncodedCommand", $encodedSenderCommand
+            "-File", $script:SenderScriptFile
         ) `
         -WorkingDirectory $repoRoot `
         -WindowStyle Normal `
         -PassThru
 
     Wait-SenderBaselineCaptured
+    Wait-SenderPreviewFrames
 
     Write-Host ""
     Write-Host "Stage 2 is waiting for fresh UDP preview and robot checks."
