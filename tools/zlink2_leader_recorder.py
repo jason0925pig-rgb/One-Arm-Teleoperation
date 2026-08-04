@@ -679,14 +679,35 @@ def record_session(
         print()
         print("Put the leader arm in the desired starting pose.")
         print("This starting pose becomes the offset origin for this session.")
-        input("Press Enter to capture the baseline and start recording: ")
+        print("Press Enter to capture the baseline and start recording.")
+        input("> ")
 
-    baseline = zlink.median_baseline(
-        port,
-        ids,
-        args.timeout,
-        count=args.baseline_samples,
-    )
+    baseline: dict[int, int] = {}
+    missing_baseline: list[int] = list(ids)
+    deadline = time.monotonic() + args.baseline_retry_seconds
+    attempt = 0
+    while True:
+        attempt += 1
+        baseline = zlink.median_baseline(
+            port,
+            ids,
+            args.timeout,
+            count=args.baseline_samples,
+        )
+        missing_baseline = [servo_id for servo_id in ids if servo_id not in baseline]
+        if not missing_baseline:
+            if attempt > 1:
+                print(f"Baseline captured after {attempt} attempts.")
+            break
+        if time.monotonic() >= deadline:
+            break
+        print(
+            "Baseline attempt "
+            f"{attempt} incomplete; missing servo IDs {missing_baseline}. "
+            "Retrying...",
+            flush=True,
+        )
+        time.sleep(0.10)
     missing_baseline = [servo_id for servo_id in ids if servo_id not in baseline]
     if missing_baseline:
         raise RuntimeError(
@@ -1054,6 +1075,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--timeout", type=float, default=0.03)
     parser.add_argument("--baseline-samples", type=int, default=5)
+    parser.add_argument(
+        "--baseline-retry-seconds",
+        type=float,
+        default=5.0,
+        help="retry baseline capture for this many seconds after Enter",
+    )
     parser.add_argument("--flush-every", type=int, default=10)
     parser.add_argument(
         "--max-consecutive-incomplete",
