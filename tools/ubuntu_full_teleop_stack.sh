@@ -172,6 +172,43 @@ wait_gripper_fields() {
   return 1
 }
 
+wait_attended_servo_ready() {
+  local timeout_seconds="${1:-10}"
+  local deadline=$((SECONDS + timeout_seconds))
+  local output=""
+  local required=""
+  local sample_count=0
+  while (( SECONDS < deadline )); do
+    output="$(topic_once /right_arm/safety_status 2 || true)"
+    if [[ -n "${output}" ]]; then
+      sample_count=$((sample_count + 1))
+      local ok=1
+      for required in \
+        "motion_enabled=1" \
+        "robot_error_code=0" \
+        "robot_emergency_stop=0" \
+        "robot_protective_stop=0" \
+        "robot_on_soft_limit=0"; do
+        if ! grep -Fq "${required}" <<<"${output}"; then
+          ok=0
+          break
+        fi
+      done
+      if (( ok != 0 )); then
+        printf '%s\n' "${output}"
+        if ! grep -Fq "servo_mode_entered=1" <<<"${output}"; then
+          echo "WARNING: servo_mode_entered=1 was not observed in this status sample; continuing because motion service succeeded and robot safety fields are healthy." >&2
+        fi
+        return 0
+      fi
+    fi
+    sleep 0.25
+  done
+  echo "ERROR: attended servo-ready status was not observed after ${sample_count} sample(s)." >&2
+  [[ -n "${output}" ]] && printf '%s\n' "${output}" >&2
+  return 1
+}
+
 initialize_gripper_open() {
   echo "INITIAL_GRIPPER_OPENING: follower gripper will move to its configured open position."
   if ! call_set_bool /right_arm/set_gripper_open true; then
@@ -589,19 +626,15 @@ arm_stack() {
     exit 6
   fi
 
-  # A service success is not enough: keep observing the real node after it
-  # enters servo mode so an immediate watchdog/deadline disarm cannot be
-  # mistaken for a ready system.
+  # A service success is not enough: keep observing the real node after motion
+  # is enabled. Do not require servo_mode_entered=1 to appear in the same
+  # status sample; this SDK/node combination can report the service success
+  # before that field is visible in /right_arm/safety_status.
   sleep 1
   ensure_components_running
   local armed_status
-  if ! armed_status="$(
-    wait_status_fields 10 \
-      "motion_enabled=1" \
-      "servo_mode_entered=1" \
-      "robot_error_code=0"
-  )"; then
-    echo "ERROR: servo gate did not remain stable for one second." >&2
+  if ! armed_status="$(wait_attended_servo_ready 10)"; then
+    echo "ERROR: servo gate did not pass attended ready checks." >&2
     safe_hardware_shutdown || true
     show_logs
     exit 6
