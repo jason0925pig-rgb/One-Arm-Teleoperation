@@ -520,10 +520,10 @@ if ($script:EpisodeRecordingStarted) {
     }
     else {
         Write-Host (
-            "The session did not end normally; it will be marked failure " +
-            "and kept only as a raw diagnostic episode. Pressing F after a " +
-            "normal run is the action that deletes an episode."
+            "The session did not end normally; the raw episode and Windows " +
+            "sender recording will be discarded. Only saved S episodes are kept."
         )
+        $userDiscardRequested = $true
     }
     try {
         if ($userDiscardRequested) {
@@ -553,7 +553,10 @@ if ($script:EpisodeRecordingStarted) {
             Write-Host (
                 "DATASET FINALIZATION ERROR: " + $_.Exception.Message
             ) -ForegroundColor Red
-            Write-Host "The raw ROS bag was preserved and can be exported later."
+            Write-Host (
+                "A success export failed. The raw ROS bag may still be " +
+                "present so it can be inspected or exported manually."
+            )
         }
     }
 }

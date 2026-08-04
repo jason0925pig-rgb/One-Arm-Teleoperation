@@ -532,17 +532,17 @@ finalize_episode() {
     echo "ERROR: no completed episode path is available." >&2
     return 10
   }
+  if [[ "${outcome}" == "failure" ]]; then
+    discard_episode
+    echo "EPISODE_FAILURE_DISCARDED_NO_RAW_KEPT"
+    return 0
+  fi
   episode_dir="$(<"${EPISODE_PATH_FILE}")"
   archive_runtime_logs "${episode_dir}"
   python3 "${PROJECT_ROOT}/tools/set_episode_outcome.py" \
     "${episode_dir}" \
     --outcome "${outcome}" \
     --recover-closed-recording
-  if [[ "${outcome}" == "failure" ]]; then
-    echo "EPISODE_MARKED_FAILURE_RAW_PRESERVED"
-    echo "EPISODE_DIR=${episode_dir}"
-    return 0
-  fi
   [[ -x "${LEROBOT_PYTHON}" ]] || {
     echo "ERROR: LeRobot environment is missing: ${LEROBOT_PYTHON}" >&2
     echo "Run tools/setup_lerobot_ubuntu.sh once." >&2
