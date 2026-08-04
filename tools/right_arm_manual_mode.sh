@@ -84,6 +84,27 @@ call_set_bool() {
   grep -Eq 'success[=:][[:space:]]*(true|True)' <<<"${output}"
 }
 
+status_has_field() {
+  local expected="$1"
+  local status=""
+  status="$(topic_once /right_arm/safety_status 3 || true)"
+  grep -Fq "${expected}" <<<"${status}"
+}
+
+ensure_set_bool_state() {
+  local service_name="$1"
+  local value="$2"
+  local expected_status="$3"
+  local timeout_seconds="${4:-30}"
+
+  if status_has_field "${expected_status}"; then
+    echo "${service_name}: already ${expected_status}; skipping request."
+    return 0
+  fi
+  call_set_bool "${service_name}" "${value}"
+  wait_status_field "${expected_status}" "${timeout_seconds}" >/dev/null
+}
+
 cleanup() {
   local exit_code=$?
   if (( CLEANUP_STARTED != 0 )); then
@@ -203,12 +224,9 @@ for required in \
   fi
 done
 
-call_set_bool /right_arm/set_powered_on true
-wait_status_field "robot_powered_on=1" 30 >/dev/null
-call_set_bool /right_arm/set_robot_enabled true
-wait_status_field "robot_enabled=1" 30 >/dev/null
-call_set_bool /right_arm/set_drag_enabled true
-wait_status_field "robot_drag_status=1" 15 >/dev/null
+ensure_set_bool_state /right_arm/set_powered_on true "robot_powered_on=1" 30
+ensure_set_bool_state /right_arm/set_robot_enabled true "robot_enabled=1" 30
+ensure_set_bool_state /right_arm/set_drag_enabled true "robot_drag_status=1" 15
 
 echo
 echo "RIGHT_ARM_MANUAL_DRAG_READY"
