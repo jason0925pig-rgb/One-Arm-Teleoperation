@@ -49,6 +49,7 @@ DEFAULT_PRIMARY_CAMERA_FEATURE = "observation.images.head"
 ROSBAG_GRACEFUL_STOP_TIMEOUT_SECONDS = 120.0
 ROSBAG_TERMINATE_TIMEOUT_SECONDS = 10.0
 ROSBAG_START_TIMEOUT_SECONDS = 20.0
+REQUIRED_PUBLISHER_WAIT_SECONDS = 8.0
 LEROBOT_REQUIRED_TOPICS = (
     "/right_arm/executed_joint_command",
     "/right_arm/joint_states",
@@ -126,6 +127,37 @@ def topic_publisher_count(topic: str) -> int:
         return 0
     match = re.search(r"Publisher count:\s*(\d+)", result.stdout)
     return int(match.group(1)) if match else 0
+
+
+def wait_for_required_publishers(topics: set[str], timeout: float) -> list[str]:
+    deadline = time.monotonic() + timeout
+    missing_publishers: list[str] = []
+    while True:
+        missing_publishers = sorted(
+            topic for topic in topics if topic_publisher_count(topic) < 1
+        )
+        if not missing_publishers:
+            return []
+        if time.monotonic() >= deadline:
+            return missing_publishers
+        time.sleep(0.25)
+
+
+def print_ros_graph_diagnostics(topics: set[str]) -> None:
+    print("--- ROS 2 graph diagnostics ---", file=sys.stderr)
+    print(f"ROS_DISTRO={os.environ.get('ROS_DISTRO', 'unknown')}", file=sys.stderr)
+    for package in ("servo_controller", "one_arm_teleop_bridge"):
+        output = run_text(["ros2", "pkg", "prefix", package])
+        if output:
+            print(f"{package} prefix: {output}", file=sys.stderr)
+    nodes = run_text(["ros2", "node", "list"])
+    if nodes:
+        print("Nodes:", file=sys.stderr)
+        print(nodes, file=sys.stderr)
+    for topic in sorted(topics):
+        print(f"--- {topic} ---", file=sys.stderr)
+        info = run_text(["ros2", "topic", "info", topic, "--verbose"])
+        print(info or "(no topic info)", file=sys.stderr)
 
 
 def unique_episode_directory(root: Path, name: str) -> Path:
@@ -257,10 +289,9 @@ def main() -> int:
         )
         return 3
 
-    missing_publishers = sorted(
-        topic
-        for topic in required_topics
-        if topic_publisher_count(topic) < 1
+    missing_publishers = wait_for_required_publishers(
+        required_topics,
+        REQUIRED_PUBLISHER_WAIT_SECONDS,
     )
     if missing_publishers:
         print(
@@ -268,6 +299,7 @@ def main() -> int:
             + ", ".join(missing_publishers),
             file=sys.stderr,
         )
+        print_ros_graph_diagnostics(required_topics)
         return 3
 
     camera_topics = (args.head_topic, args.wrist_topic)

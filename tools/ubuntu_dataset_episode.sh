@@ -135,6 +135,32 @@ topic_publisher_count() {
   printf '%s\n' "${count:-0}"
 }
 
+print_topic_diagnostics() {
+  local topic
+  echo "--- ROS 2 graph diagnostics ---" >&2
+  echo "ROS_DISTRO=${ROS_DISTRO:-unknown}" >&2
+  echo "PROJECT_ROOT=${PROJECT_ROOT}" >&2
+  ros2 pkg prefix servo_controller 2>/dev/null | sed 's/^/servo_controller prefix: /' >&2 || true
+  ros2 pkg prefix one_arm_teleop_bridge 2>/dev/null | sed 's/^/one_arm_teleop_bridge prefix: /' >&2 || true
+  echo "Nodes:" >&2
+  ros2 node list 2>/dev/null >&2 || true
+  for topic in "$@"; do
+    echo "--- ${topic} ---" >&2
+    ros2 topic info "${topic}" --verbose 2>/dev/null >&2 ||
+      ros2 topic info "${topic}" 2>/dev/null >&2 ||
+      true
+  done
+  echo "--- launcher component logs ---" >&2
+  for topic in arm gripper bridge cameras recorder; do
+    local log_file
+    log_file="$(component_log_file "${topic}")"
+    if [[ -r "${log_file}" ]]; then
+      echo "--- ${topic}.log tail ---" >&2
+      tail -n 35 "${log_file}" >&2 || true
+    fi
+  done
+}
+
 wait_for_topic_publisher() {
   local topic="$1"
   local timeout_seconds="${2:-20}"
@@ -148,6 +174,28 @@ wait_for_topic_publisher() {
     sleep 0.25
   done
   echo "ERROR: no active publisher appeared for ${topic}" >&2
+  return 1
+}
+
+wait_for_topic_publisher_stable() {
+  local topic="$1"
+  local timeout_seconds="${2:-25}"
+  local stable_samples="${3:-5}"
+  local deadline=$((SECONDS + timeout_seconds))
+  local count consecutive=0
+  while (( SECONDS < deadline )); do
+    count="$(topic_publisher_count "${topic}")"
+    if [[ "${count}" =~ ^[0-9]+$ ]] && (( count > 0 )); then
+      consecutive=$((consecutive + 1))
+      if (( consecutive >= stable_samples )); then
+        return 0
+      fi
+    else
+      consecutive=0
+    fi
+    sleep 0.20
+  done
+  echo "ERROR: no stable active publisher for ${topic}" >&2
   return 1
 }
 
@@ -315,17 +363,24 @@ start_cameras() {
 
 wait_for_record_topics() {
   local topic
-  for topic in \
-    /right_arm/executed_joint_command \
-    /right_arm/joint_states \
-    /right_arm/gripper_command \
-    /right_arm/executed_gripper_command \
-    /right_arm/gripper_feedback_valid \
-    /right_arm/gripper_contact \
-    "${HEAD_TOPIC}" \
-    "${WRIST_TOPIC}"; do
-    wait_for_topic_publisher "${topic}" 20 || return 1
+  local -a topics
+  topics=(
+    /right_arm/executed_joint_command
+    /right_arm/joint_states
+    /right_arm/gripper_command
+    /right_arm/executed_gripper_command
+    /right_arm/gripper_feedback_valid
+    /right_arm/gripper_contact
+    "${HEAD_TOPIC}"
+    "${WRIST_TOPIC}"
+  )
+  for topic in "${topics[@]}"; do
+    if ! wait_for_topic_publisher_stable "${topic}" 30 6; then
+      print_topic_diagnostics "${topics[@]}"
+      return 1
+    fi
   done
+  echo "DATASET_REQUIRED_TOPICS_READY"
 }
 
 start_recording() {
