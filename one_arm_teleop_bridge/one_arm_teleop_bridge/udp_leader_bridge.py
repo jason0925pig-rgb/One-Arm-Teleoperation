@@ -56,9 +56,11 @@ class UdpLeaderBridge(Node):
         self.declare_parameter("max_packet_age_seconds", 0.50)
         self.declare_parameter("max_future_skew_seconds", 0.25)
         self.declare_parameter("packet_timeout_seconds", 0.30)
+        self.declare_parameter("stop_on_packet_timeout", True)
         self.declare_parameter("stop_on_rejected_packet", False)
         self.declare_parameter("minimum_packet_rate_hz_for_motion", 0.0)
         self.declare_parameter("follower_state_timeout_seconds", 0.30)
+        self.declare_parameter("stop_on_follower_state_timeout", True)
         self.declare_parameter("joint_signs", [1.0] * JOINT_COUNT)
         self.declare_parameter("scale_rad_per_pulse", [0.0] * JOINT_COUNT)
         self.declare_parameter("joint_lower_limits", [0.0] * JOINT_COUNT)
@@ -78,6 +80,9 @@ class UdpLeaderBridge(Node):
         self.packet_timeout = float(
             self.get_parameter("packet_timeout_seconds").value
         )
+        self.stop_on_packet_timeout = bool(
+            self.get_parameter("stop_on_packet_timeout").value
+        )
         self.stop_on_rejected_packet = bool(
             self.get_parameter("stop_on_rejected_packet").value
         )
@@ -86,6 +91,9 @@ class UdpLeaderBridge(Node):
         )
         self.follower_timeout = float(
             self.get_parameter("follower_state_timeout_seconds").value
+        )
+        self.stop_on_follower_timeout = bool(
+            self.get_parameter("stop_on_follower_state_timeout").value
         )
         self.expected_source_ip = str(
             self.get_parameter("expected_source_ip").value
@@ -537,10 +545,14 @@ class UdpLeaderBridge(Node):
         if not self.mapping_enabled:
             return
         now = time.monotonic()
-        if now - self.last_leader_received > self.packet_timeout:
+        if (
+            self.stop_on_packet_timeout
+            and now - self.last_leader_received > self.packet_timeout
+        ):
             self._request_stop("leader packet timeout")
         elif (
-            not self.gripper_only_mode
+            self.stop_on_follower_timeout
+            and not self.gripper_only_mode
             and now - self.last_follower_received > self.follower_timeout
         ):
             self._request_stop("follower state timeout")
@@ -563,6 +575,8 @@ class UdpLeaderBridge(Node):
             f"packet_age_s={self.last_packet_age_seconds if self.last_packet_age_seconds is not None else -1:.3f};"
             f"packet_rate_hz={self._recent_packet_rate_hz():.2f};"
             f"minimum_packet_rate_hz={self.minimum_packet_rate_hz:.2f};"
+            f"stop_on_packet_timeout={self.stop_on_packet_timeout};"
+            f"stop_on_follower_state_timeout={self.stop_on_follower_timeout};"
             f"stop_on_rejected_packet={self.stop_on_rejected_packet};"
             f"accepted_packets={self.accepted_packets};"
             f"consecutive_accepted_packets={self.consecutive_accepted_packets};"

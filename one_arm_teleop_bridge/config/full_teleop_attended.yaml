@@ -31,22 +31,25 @@ udp_leader_bridge:
 
     require_deadman_for_motion: true
     enforce_packet_timestamps_for_motion: true
-    # Reject (do not execute) a frame more than two seconds old. A rejected
-    # frame no longer latches STOP by itself; only an explicit STOP, a robot
-    # fault, or the three-second valid-packet watchdog does that.
+    # Reject (do not execute) stale/future frames, but do not latch STOP from
+    # packet timing during attended collection. The operator has Space/Esc,
+    # Ctrl+C and the physical emergency stop.
     max_packet_age_seconds: 2.00
     # Keep timestamp validation enabled but allow generous attended-session
     # clock drift and network jitter.
     max_future_skew_seconds: 2.00
     # ZLink2 currently delivers about 15 valid complete frames per second.
-    # Motion may arm at 5 Hz and tolerates a three-second complete-stream gap.
+    # The session must have a live preview before arming, but once armed we do
+    # not auto-stop on brief Windows/network gaps.
     minimum_packet_rate_hz_for_motion: 5.0
-    packet_timeout_seconds: 3.00
+    packet_timeout_seconds: 30.00
+    stop_on_packet_timeout: false
     stop_on_rejected_packet: false
 
-    # Robot-state freshness is independent of Windows UDP freshness, but the
-    # Jetson/SDK is allowed a two-second transient stall.
-    follower_state_timeout_seconds: 2.00
+    # Robot-state freshness is still checked before arming. During recording,
+    # follower-state gaps are reported but no longer publish STOP by themselves.
+    follower_state_timeout_seconds: 30.00
+    stop_on_follower_state_timeout: false
 
     # Attended direction check: only J6 (leader ID 5) is reversed.
     joint_signs: [1.0, 1.0, 1.0, 1.0, 1.0, -1.0, 1.0]

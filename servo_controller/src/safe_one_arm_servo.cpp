@@ -47,6 +47,10 @@ public:
             declare_parameter<double>("command_timeout_seconds", 0.30);
         feedback_timeout_seconds_ =
             declare_parameter<double>("feedback_timeout_seconds", 0.30);
+        stop_on_command_timeout_ =
+            declare_parameter<bool>("stop_on_command_timeout", true);
+        stop_on_feedback_timeout_ =
+            declare_parameter<bool>("stop_on_feedback_timeout", true);
         control_rate_hz_ = declare_parameter<double>("control_rate_hz", 125.0);
         state_rate_hz_ = declare_parameter<double>("state_rate_hz", 20.0);
         control_deadline_warning_factor_ =
@@ -56,6 +60,8 @@ public:
         control_deadline_abort_consecutive_misses_ =
             declare_parameter<int>(
                 "control_deadline_abort_consecutive_misses", 2);
+        stop_on_control_deadline_abort_ =
+            declare_parameter<bool>("stop_on_control_deadline_abort", true);
         require_single_command_publisher_ =
             declare_parameter<bool>("require_single_command_publisher", true);
         lower_limits_ =
@@ -863,15 +869,17 @@ private:
             has_target_ &&
             callback_period > control_deadline_abort_seconds_) {
             ++consecutive_control_deadline_aborts_;
-            RCLCPP_ERROR(
+            RCLCPP_WARN(
                 get_logger(),
                 "Severe control deadline miss %d/%d: actual=%.6fs "
-                "abort_threshold=%.6fs",
+                "abort_threshold=%.6fs stop_on_abort=%d",
                 consecutive_control_deadline_aborts_,
                 control_deadline_abort_consecutive_misses_,
                 callback_period,
-                control_deadline_abort_seconds_);
+                control_deadline_abort_seconds_,
+                stop_on_control_deadline_abort_);
             if (
+                stop_on_control_deadline_abort_ &&
                 consecutive_control_deadline_aborts_ >=
                 control_deadline_abort_consecutive_misses_) {
                 disarm_locked(
@@ -887,13 +895,38 @@ private:
         const double feedback_age = std::chrono::duration<double>(
             now - last_feedback_received_).count();
         if (!feedback_valid_ || feedback_age > feedback_timeout_seconds_) {
-            disarm_locked("feedback watchdog timeout");
+            if (stop_on_feedback_timeout_) {
+                disarm_locked("feedback watchdog timeout");
+            } else {
+                RCLCPP_WARN_THROTTLE(
+                    get_logger(),
+                    *get_clock(),
+                    1000,
+                    "Feedback watchdog timeout ignored during attended "
+                    "collection: age=%.3fs timeout=%.3fs",
+                    feedback_age,
+                    feedback_timeout_seconds_);
+            }
             return;
         }
         const double age = std::chrono::duration<double>(
             now - last_command_received_).count();
         if (age > command_timeout_seconds_) {
-            disarm_locked("command watchdog timeout");
+            if (stop_on_command_timeout_) {
+                disarm_locked("command watchdog timeout");
+            } else {
+                target_ = current_command_;
+                command_velocity_.fill(0.0);
+                RCLCPP_WARN_THROTTLE(
+                    get_logger(),
+                    *get_clock(),
+                    1000,
+                    "Command watchdog timeout ignored during attended "
+                    "collection; holding current target: age=%.3fs "
+                    "timeout=%.3fs",
+                    age,
+                    command_timeout_seconds_);
+            }
             return;
         }
         double dt = std::chrono::duration<double>(now - last_control_tick_).count();
@@ -973,8 +1006,10 @@ private:
                 feedback_timeout_seconds_);
             if (!feedback_valid_ || feedback_age > feedback_timeout_seconds_) {
                 feedback_valid_ = false;
-                disarm_locked("actual joint-state feedback timeout");
-                connected_ = false;
+                if (stop_on_feedback_timeout_) {
+                    disarm_locked("actual joint-state feedback timeout");
+                    connected_ = false;
+                }
             }
             return;
         }
@@ -1168,6 +1203,10 @@ private:
              << ";control_deadline_misses=" << control_deadline_misses_
              << ";consecutive_control_deadline_aborts="
              << consecutive_control_deadline_aborts_
+             << ";stop_on_command_timeout=" << stop_on_command_timeout_
+             << ";stop_on_feedback_timeout=" << stop_on_feedback_timeout_
+             << ";stop_on_control_deadline_abort="
+             << stop_on_control_deadline_abort_
              << ";last_control_period_s=" << last_control_period_seconds_
              << ";max_control_period_s=" << max_control_period_seconds_;
         status.data = stream.str();
@@ -1209,11 +1248,14 @@ private:
     int last_servo_disable_error_{0};
     double command_timeout_seconds_{0.30};
     double feedback_timeout_seconds_{0.30};
+    bool stop_on_command_timeout_{true};
+    bool stop_on_feedback_timeout_{true};
     double control_rate_hz_{125.0};
     double state_rate_hz_{20.0};
     double control_deadline_warning_factor_{1.5};
     double control_deadline_abort_seconds_{0.05};
     int control_deadline_abort_consecutive_misses_{2};
+    bool stop_on_control_deadline_abort_{true};
     int consecutive_control_deadline_aborts_{0};
     std::vector<std::string> joint_names_;
     std::vector<double> lower_limits_;

@@ -15,17 +15,21 @@ safe_one_arm_servo:
     enable_robot_on_arm: false
     disable_robot_on_disarm: false
 
-    # Tolerate short serial/network and robot-status stalls during attended
-    # collection. Explicit STOP, robot faults and joint limits remain active.
-    command_timeout_seconds: 3.25
-    feedback_timeout_seconds: 2.00
+    # Attended collection mode: do not auto-disarm on transient Windows,
+    # network, SDK or scheduler stalls. Explicit STOP, physical e-stop, robot
+    # faults and joint limits remain active.
+    command_timeout_seconds: 30.00
+    feedback_timeout_seconds: 30.00
+    stop_on_command_timeout: false
+    stop_on_feedback_timeout: false
     control_rate_hz: 125.0
     state_rate_hz: 20.0
     control_deadline_warning_factor: 1.5
-    # The Jetson/SDK occasionally blocks for several hundred milliseconds.
-    # Require three consecutive stalls above 750 ms before disarming.
-    control_deadline_abort_seconds: 0.75
-    control_deadline_abort_consecutive_misses: 3
+    # Deadline misses are logged for diagnosis but no longer disarm the arm in
+    # attended collection.
+    control_deadline_abort_seconds: 5.00
+    control_deadline_abort_consecutive_misses: 100
+    stop_on_control_deadline_abort: false
     require_single_command_publisher: true
 
     joint_lower_limits: [-6.2832, -1.8325, -6.2832, -2.5307, -6.2832, -1.8325, -6.2832]
@@ -59,4 +63,5 @@ safe_gripper_controller:
     closed_speed: 75
     closed_force: 25
     allowed_alarm_mask: 32
-    movement_timeout_seconds: 8.0
+    movement_timeout_seconds: 30.0
+    stop_on_movement_timeout: false

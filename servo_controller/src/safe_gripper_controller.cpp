@@ -43,6 +43,8 @@ public:
             declare_parameter<int>("allowed_alarm_mask", 0);
         movement_timeout_seconds_ =
             declare_parameter<double>("movement_timeout_seconds", 2.0);
+        stop_on_movement_timeout_ =
+            declare_parameter<bool>("stop_on_movement_timeout", true);
 
         const std::string prefix = "/" + arm_name_ + "_arm";
         command_sub_ = create_subscription<std_msgs::msg::Bool>(
@@ -401,8 +403,12 @@ private:
                 const double age = std::chrono::duration<double>(
                     std::chrono::steady_clock::now() - movement_started_).count();
                 if (moving_ && age > movement_timeout_seconds_) {
-                    stop_at_current_position("movement timeout");
-                    state = "WATCHDOG_STOP";
+                    if (stop_on_movement_timeout_) {
+                        stop_at_current_position("movement timeout");
+                        state = "WATCHDOG_STOP";
+                    } else {
+                        state = "MOVEMENT_TIMEOUT_IGNORED";
+                    }
                 }
             }
         } catch (const std::exception &error) {
@@ -444,6 +450,7 @@ private:
                     : "commanded_endpoint_estimate")
             << ";feedback_position_valid=" << feedback_position_valid_
             << ";contact=" << contact_
+            << ";stop_on_movement_timeout=" << stop_on_movement_timeout_
             << ";alarm=" << last_alarm_;
         status.data = stream.str();
         status_pub_->publish(status);
@@ -468,6 +475,7 @@ private:
     int allowed_alarm_mask_{0};
     uint16_t last_alarm_{0};
     double movement_timeout_seconds_{2.0};
+    bool stop_on_movement_timeout_{true};
     bool enabled_{false};
     bool moving_{false};
     bool has_requested_state_{false};
