@@ -96,122 +96,62 @@ wait_for_service() {
 topic_once() {
   local topic_name="$1"
   local timeout_seconds="${2:-3}"
-  # Jazzy truncates strings after 128 characters by default. Safety and
-  # bridge status fields used for arming are beyond that boundary.
-  timeout "${timeout_seconds}" \
-    ros2 topic echo --full-length --once "${topic_name}" 2>/dev/null
+  python3 "${PROJECT_ROOT}/tools/wait_for_string_topic.py" \
+    "${topic_name}" --timeout "${timeout_seconds}"
 }
 
 wait_status_field() {
   local expected="$1"
   local timeout_seconds="${2:-20}"
-  local deadline=$((SECONDS + timeout_seconds))
-  local output=""
-  while (( SECONDS < deadline )); do
-    output="$(topic_once /right_arm/safety_status 2 || true)"
-    if grep -Fq "${expected}" <<<"${output}"; then
-      return 0
-    fi
-    sleep 0.25
-  done
-  echo "ERROR: safety status did not reach ${expected}" >&2
-  [[ -n "${output}" ]] && printf '%s\n' "${output}" >&2
-  return 1
+  python3 "${PROJECT_ROOT}/tools/wait_for_string_topic.py" \
+    /right_arm/safety_status \
+    --timeout "${timeout_seconds}" \
+    --contains "${expected}"
 }
 
 wait_status_fields() {
   local timeout_seconds="$1"
   shift
-  local deadline=$((SECONDS + timeout_seconds))
-  local output=""
-  local expected=""
-  local all_present=0
-  while (( SECONDS < deadline )); do
-    output="$(topic_once /right_arm/safety_status 2 || true)"
-    if [[ -n "${output}" ]]; then
-      all_present=1
-      for expected in "$@"; do
-        if ! grep -Fq "${expected}" <<<"${output}"; then
-          all_present=0
-          break
-        fi
-      done
-      if (( all_present != 0 )); then
-        printf '%s\n' "${output}"
-        return 0
-      fi
-    fi
-    sleep 0.25
+  local -a arguments=(
+    "${PROJECT_ROOT}/tools/wait_for_string_topic.py"
+    /right_arm/safety_status
+    --timeout "${timeout_seconds}"
+  )
+  local expected
+  for expected in "$@"; do
+    arguments+=(--contains "${expected}")
   done
-  echo "ERROR: no single safety-status sample contained all required fields: $*" >&2
-  [[ -n "${output}" ]] && printf '%s\n' "${output}" >&2
-  return 1
+  python3 "${arguments[@]}"
 }
 
 wait_gripper_fields() {
   local timeout_seconds="$1"
   shift
-  local deadline=$((SECONDS + timeout_seconds))
-  local output=""
-  local expected=""
-  local all_present=0
-  while (( SECONDS < deadline )); do
-    output="$(topic_once /right_arm/gripper_status 2 || true)"
-    if [[ -n "${output}" ]]; then
-      all_present=1
-      for expected in "$@"; do
-        if ! grep -Fq "${expected}" <<<"${output}"; then
-          all_present=0
-          break
-        fi
-      done
-      if (( all_present != 0 )); then
-        printf '%s\n' "${output}"
-        return 0
-      fi
-    fi
-    sleep 0.20
+  local -a arguments=(
+    "${PROJECT_ROOT}/tools/wait_for_string_topic.py"
+    /right_arm/gripper_status
+    --timeout "${timeout_seconds}"
+  )
+  local expected
+  for expected in "$@"; do
+    arguments+=(--contains "${expected}")
   done
-  echo "ERROR: no gripper-status sample contained all required fields: $*" >&2
-  [[ -n "${output}" ]] && printf '%s\n' "${output}" >&2
-  return 1
+  python3 "${arguments[@]}"
 }
 
 wait_attended_servo_ready() {
   local timeout_seconds="${1:-10}"
-  local deadline=$((SECONDS + timeout_seconds))
   local output=""
-  local required=""
-  local sample_count=0
-  while (( SECONDS < deadline )); do
-    output="$(topic_once /right_arm/safety_status 2 || true)"
-    if [[ -n "${output}" ]]; then
-      sample_count=$((sample_count + 1))
-      local ok=1
-      for required in \
-        "motion_enabled=1" \
-        "robot_error_code=0" \
-        "robot_emergency_stop=0" \
-        "robot_protective_stop=0" \
-        "robot_on_soft_limit=0"; do
-        if ! grep -Fq "${required}" <<<"${output}"; then
-          ok=0
-          break
-        fi
-      done
-      if (( ok != 0 )); then
-        printf '%s\n' "${output}"
-        if ! grep -Fq "servo_mode_entered=1" <<<"${output}"; then
-          echo "WARNING: servo_mode_entered=1 was not observed in this status sample; continuing because motion service succeeded and robot safety fields are healthy." >&2
-        fi
-        return 0
-      fi
-    fi
-    sleep 0.25
-  done
-  echo "ERROR: attended servo-ready status was not observed after ${sample_count} sample(s)." >&2
-  [[ -n "${output}" ]] && printf '%s\n' "${output}" >&2
-  return 1
+  output="$(wait_status_fields "${timeout_seconds}" \
+    "motion_enabled=1" \
+    "robot_error_code=0" \
+    "robot_emergency_stop=0" \
+    "robot_protective_stop=0" \
+    "robot_on_soft_limit=0")" || return 1
+  printf '%s\n' "${output}"
+  if ! grep -Fq "servo_mode_entered=1" <<<"${output}"; then
+    echo "WARNING: servo_mode_entered=1 was not observed in this status sample; continuing because motion service succeeded and robot safety fields are healthy." >&2
+  fi
 }
 
 initialize_gripper_open() {
@@ -535,29 +475,18 @@ start_stack() {
 }
 
 wait_for_leader_preview() {
-  local deadline=$((SECONDS + 120))
   local output=""
-  local consecutive="0"
   echo "Waiting for Windows Enter/start-pose capture and fresh UDP preview..."
-  while (( SECONDS < deadline )); do
-    output="$(topic_once /teleop/bridge_status 2 || true)"
-    consecutive="$(
-      sed -n \
-        's/.*consecutive_accepted_packets=\([0-9][0-9]*\).*/\1/p' \
-        <<<"${output}"
-    )"
-    consecutive="${consecutive:-0}"
-    if grep -Eq 'session=(none)?;' <<<"${output}"; then
-      :
-    elif grep -Eq 'sequence=[0-9]+' <<<"${output}" &&
-         grep -Fq 'deadman_held=False' <<<"${output}" &&
-         [[ "${consecutive}" =~ ^[0-9]+$ ]] &&
-         (( consecutive >= 5 )); then
+  output="$(python3 "${PROJECT_ROOT}/tools/wait_for_string_topic.py" \
+    /teleop/bridge_status \
+    --timeout 120 \
+    --contains 'deadman_held=False' \
+    --regex 'session=(?!none(?:;|$))[^;]+' \
+    --regex 'sequence=[0-9]+' \
+    --regex 'consecutive_accepted_packets=([5-9]|[1-9][0-9]+)')" && {
       printf '%s\n' "${output}"
       return 0
-    fi
-    sleep 0.25
-  done
+    }
   echo "ERROR: no safe Windows preview arrived within 120 seconds." >&2
   if [[ -n "${output}" ]]; then
     echo "--- last /teleop/bridge_status sample ---" >&2

@@ -18,6 +18,7 @@ RAW_ROOT="${DATA_ROOT}/raw_episodes"
 LEROBOT_ROOT="${DATA_ROOT}/lerobot_dataset"
 RUNTIME_DIR="/tmp/one_arm_dataset_${UID}"
 EPISODE_PATH_FILE="${RUNTIME_DIR}/episode_path.txt"
+EPISODE_STATE_DIR="${RUNTIME_DIR}/episodes"
 MINIMUM_FREE_BYTES="${ONE_ARM_DATASET_MIN_FREE_BYTES:-10737418240}"
 RECORDER_STOP_TIMEOUT_SECONDS="${ONE_ARM_RECORDER_STOP_TIMEOUT_SECONDS:-180}"
 PRIMARY_CAMERA_ROLE="${ONE_ARM_PRIMARY_CAMERA_ROLE:-head}"
@@ -43,7 +44,7 @@ BACKGROUND_CPU_LIST="${ONE_ARM_BACKGROUND_CPUS:-}"
 PREVIEW_BIND_HOST="${ONE_ARM_CAMERA_PREVIEW_BIND_HOST:-0.0.0.0}"
 PREVIEW_PORT="${ONE_ARM_CAMERA_PREVIEW_PORT:-8088}"
 
-mkdir -p "${RUNTIME_DIR}"
+mkdir -p "${RUNTIME_DIR}" "${EPISODE_STATE_DIR}"
 
 for setup_file in "${ROS_SETUP}" "${ORBBEC_SETUP}" "${WORKSPACE_SETUP}"; do
   if [[ ! -r "${setup_file}" ]]; then
@@ -79,6 +80,15 @@ component_pid_file() {
 
 component_log_file() {
   printf '%s/%s.log\n' "${RUNTIME_DIR}" "$1"
+}
+
+episode_state_file() {
+  local episode_name="$1"
+  [[ "${episode_name}" =~ ^[A-Za-z0-9_-]+$ ]] || {
+    echo "ERROR: refusing unexpected episode name: ${episode_name}" >&2
+    return 14
+  }
+  printf '%s/%s.path\n' "${EPISODE_STATE_DIR}" "${episode_name}"
 }
 
 component_alive() {
@@ -460,7 +470,7 @@ start_recording() {
   local episode_name="$1"
   local task_base64="$2"
   local operator_base64="${3:-}"
-  local task operator
+  local task operator state_file state_file_tmp
   [[ "${episode_name}" =~ ^[A-Za-z0-9_-]+$ ]] || {
     echo "ERROR: episode name must contain only A-Z, a-z, 0-9, _ or -." >&2
     return 2
@@ -489,6 +499,8 @@ start_recording() {
 
   mkdir -p "${RAW_ROOT}"
   rm -f -- "${EPISODE_PATH_FILE}"
+  state_file="$(episode_state_file "${episode_name}")" || return $?
+  rm -f -- "${state_file}"
   start_component recorder \
     nice -n 5 taskset -c "${BACKGROUND_CPU_LIST}" \
       python3 "${PROJECT_ROOT}/tools/ros2_episode_recorder.py" \
@@ -507,6 +519,9 @@ start_recording() {
   local deadline=$((SECONDS + 20))
   while (( SECONDS < deadline )); do
     if [[ -s "${EPISODE_PATH_FILE}" ]]; then
+      state_file_tmp="${state_file}.tmp.$$"
+      printf '%s\n' "$(<"${EPISODE_PATH_FILE}")" >"${state_file_tmp}"
+      mv -f -- "${state_file_tmp}" "${state_file}"
       echo "DATASET_RECORDING_STARTED"
       echo "EPISODE_DIR=$(<"${EPISODE_PATH_FILE}")"
       return 0
@@ -594,12 +609,14 @@ archive_runtime_logs() {
 
 resolve_episode_dir() {
   local episode_name="${1:-}"
+  local state_file
   if [[ -n "${episode_name}" ]]; then
-    [[ "${episode_name}" =~ ^[0-9]{8}_[0-9]{6}_[A-Za-z0-9_-]+$ ]] || {
-      echo "ERROR: refusing unexpected episode name: ${episode_name}" >&2
-      return 14
+    state_file="$(episode_state_file "${episode_name}")" || return $?
+    [[ -s "${state_file}" ]] || {
+      echo "ERROR: no episode path is recorded for name: ${episode_name}" >&2
+      return 10
     }
-    printf '%s/%s\n' "${RAW_ROOT}" "${episode_name}"
+    printf '%s\n' "$(<"${state_file}")"
     return 0
   fi
   [[ -s "${EPISODE_PATH_FILE}" ]] || {
@@ -672,9 +689,17 @@ discard_episode() {
   local episode_dir
   local episode_real
   local raw_root_real
+  local state_file=""
   if component_alive recorder; then
     echo "ERROR: refusing to discard while the recorder is still running." >&2
     return 13
+  fi
+  if [[ -n "${episode_name}" ]]; then
+    state_file="$(episode_state_file "${episode_name}")" || return $?
+    if [[ ! -s "${state_file}" ]]; then
+      echo "EPISODE_ALREADY_ABSENT_NAME=${episode_name}"
+      return 0
+    fi
   fi
   episode_dir="$(resolve_episode_dir "${episode_name}")" || return $?
   [[ -d "${episode_dir}" ]] || {
@@ -704,6 +729,7 @@ discard_episode() {
      [[ "$(<"${EPISODE_PATH_FILE}")" == "${episode_dir}" ]]; then
     rm -f -- "${EPISODE_PATH_FILE}"
   fi
+  [[ -z "${state_file}" ]] || rm -f -- "${state_file}"
   echo "EPISODE_DISCARDED=${episode_real}"
 }
 
