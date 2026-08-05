@@ -1,0 +1,61 @@
+safe_one_arm_servo:
+  ros__parameters:
+    arm_name: "right"
+    robot_ip: "192.168.2.226"
+    robot_port: 10020
+
+    # Checked-in defaults never authorize hardware.  The attended policy
+    # launcher must override these gates explicitly after its preflight.
+    dry_run: true
+    hardware_power_authorized: false
+    hardware_enable_authorized: false
+    hardware_motion_authorized: false
+    limits_configured: true
+    power_on_on_arm: false
+    enable_robot_on_arm: false
+    disable_robot_on_disarm: false
+
+    # Autonomous inference restores fail-stop watchdogs.  This is intentionally
+    # different from the relaxed human-attended data-collection profile.
+    command_timeout_seconds: 0.50
+    feedback_timeout_seconds: 0.50
+    stop_on_command_timeout: true
+    stop_on_feedback_timeout: true
+    control_rate_hz: 125.0
+    state_rate_hz: 20.0
+    control_deadline_warning_factor: 1.5
+    control_deadline_abort_seconds: 0.10
+    control_deadline_abort_consecutive_misses: 5
+    stop_on_control_deadline_abort: true
+    require_single_command_publisher: true
+
+    joint_lower_limits: [-6.2832, -1.8325, -6.2832, -2.5307, -6.2832, -1.8325, -6.2832]
+    joint_upper_limits: [6.2832, 1.8325, 6.2832, 0.5235, 6.2832, 1.8325, 6.2832]
+
+    # First policy rollout: one third of the original conservative teleop
+    # speed.  Raise only after an attended successful rollout is reviewed.
+    max_velocity_rad_s: [0.10, 0.10, 0.10, 0.10, 0.10, 0.10, 0.10]
+    max_acceleration_rad_s2: [0.30, 0.30, 0.30, 0.30, 0.30, 0.30, 0.30]
+
+safe_gripper_controller:
+  ros__parameters:
+    arm_name: "right"
+    gripper_type: "zx"
+    gripper_model: "CTAG2F120"
+    port: "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0"
+    slave_id: 1
+    baudrate: 115200
+
+    dry_run: true
+    configuration_complete: true
+    open_position: 2000
+    closed_position: 12000
+    speed: 50
+    force: 20
+    open_speed: 100
+    open_force: 60
+    closed_speed: 50
+    closed_force: 20
+    allowed_alarm_mask: 32
+    movement_timeout_seconds: 5.0
+    stop_on_movement_timeout: true

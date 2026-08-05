@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROS_DISTRO_NAME="${ROS_DISTRO:-humble}"
+ROS_SETUP="/opt/ros/${ROS_DISTRO_NAME}/setup.bash"
+WORKSPACE_SETUP="${PROJECT_ROOT}/install/setup.bash"
+VENV="${SMOLVLA_CLIENT_VENV:-${HOME}/work/telop/venvs/lerobot-client}"
+SERVER_ADDRESS="${SMOLVLA_SERVER_ADDRESS:?set SMOLVLA_SERVER_ADDRESS, for example 192.168.2.110:8080}"
+SERVER_MODEL_PATH="${SMOLVLA_SERVER_MODEL_PATH:?set SMOLVLA_SERVER_MODEL_PATH to the checkpoint path on the inference server}"
+TASK="${SMOLVLA_TASK:-把那瓶水放进箱子里。}"
+
+[[ -r "${ROS_SETUP}" ]] || { echo "ERROR: missing ${ROS_SETUP}" >&2; exit 2; }
+[[ -r "${WORKSPACE_SETUP}" ]] || { echo "ERROR: build the ROS workspace first" >&2; exit 2; }
+[[ -x "${VENV}/bin/python" ]] || { echo "ERROR: missing ${VENV}/bin/python" >&2; exit 2; }
+
+# shellcheck disable=SC1090
+source "${ROS_SETUP}"
+# shellcheck disable=SC1090
+source "${WORKSPACE_SETUP}"
+
+"${VENV}/bin/python" - <<'PY'
+import cv2
+import grpc
+import lerobot
+import lerobot_robot_armstrong_ros2
+import rclpy
+print("SMOLVLA_ROS_CLIENT_ENV_OK")
+PY
+
+echo "Starting observation/action client; robot action publication remains disabled."
+echo "Enable only after preflight with: ros2 service call /smolvla/set_enabled std_srvs/srv/SetBool '{data: true}'"
+exec "${VENV}/bin/python" -m lerobot_robot_armstrong_ros2.async_client \
+  --robot.type=armstrong_ros2 \
+  --robot.id=armstrong_right \
+  --task="${TASK}" \
+  --server_address="${SERVER_ADDRESS}" \
+  --policy_type=smolvla \
+  --pretrained_name_or_path="${SERVER_MODEL_PATH}" \
+  --policy_device=cuda \
+  --client_device=cpu \
+  --actions_per_chunk=10 \
+  --chunk_size_threshold=0.5 \
+  --fps=30 \
+  --aggregate_fn_name=weighted_average
