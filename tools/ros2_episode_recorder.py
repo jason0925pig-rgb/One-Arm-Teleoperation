@@ -49,7 +49,7 @@ DEFAULT_PRIMARY_CAMERA_FEATURE = "observation.images.head"
 ROSBAG_GRACEFUL_STOP_TIMEOUT_SECONDS = 120.0
 ROSBAG_TERMINATE_TIMEOUT_SECONDS = 10.0
 ROSBAG_START_TIMEOUT_SECONDS = 20.0
-REQUIRED_PUBLISHER_WAIT_SECONDS = 8.0
+REQUIRED_PUBLISHER_WAIT_SECONDS = 20.0
 LEROBOT_REQUIRED_TOPICS = (
     "/right_arm/executed_joint_command",
     "/right_arm/joint_states",
@@ -102,45 +102,52 @@ def signal_process_group(
         return
 
 
-def available_topics() -> set[str]:
-    result = subprocess.run(
-        ["ros2", "topic", "list"],
-        check=False,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip() or "ros2 topic list failed")
-    return {line.strip() for line in result.stdout.splitlines() if line.strip()}
+def discover_required_publishers(
+    topics: set[str],
+    timeout: float,
+) -> tuple[set[str], dict[str, int]]:
+    """Discover required publishers with one persistent DDS participant.
 
+    Repeated ``ros2 topic list/info`` subprocesses each create a short-lived
+    participant.  On ROS 2 Humble they can transiently see an empty graph just
+    after the arm stack starts, even after the supervisor's topic gate passed.
+    Keeping one node alive lets DDS discovery converge and prevents that false
+    negative from aborting an otherwise healthy episode with launcher code 10.
+    """
 
-def topic_publisher_count(topic: str) -> int:
-    result = subprocess.run(
-        ["ros2", "topic", "info", topic],
-        check=False,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    if result.returncode != 0:
-        return 0
-    match = re.search(r"Publisher count:\s*(\d+)", result.stdout)
-    return int(match.group(1)) if match else 0
+    try:
+        import rclpy
+        from rclpy.node import Node
+    except ImportError as exc:
+        raise RuntimeError(f"rclpy import failed: {exc}") from exc
 
-
-def wait_for_required_publishers(topics: set[str], timeout: float) -> list[str]:
+    rclpy.init(args=None)
+    node = Node(f"onearm_episode_topic_gate_{os.getpid()}")
     deadline = time.monotonic() + timeout
-    missing_publishers: list[str] = []
-    while True:
-        missing_publishers = sorted(
-            topic for topic in topics if topic_publisher_count(topic) < 1
-        )
-        if not missing_publishers:
-            return []
-        if time.monotonic() >= deadline:
-            return missing_publishers
-        time.sleep(0.25)
+    consecutive_ready = 0
+    visible_topics: set[str] = set()
+    publisher_counts = {topic: 0 for topic in topics}
+    try:
+        while time.monotonic() < deadline:
+            rclpy.spin_once(node, timeout_sec=0.10)
+            visible_topics = {
+                name for name, _types in node.get_topic_names_and_types()
+            }
+            publisher_counts = {
+                topic: len(node.get_publishers_info_by_topic(topic))
+                for topic in topics
+            }
+            if all(count > 0 for count in publisher_counts.values()):
+                consecutive_ready += 1
+                if consecutive_ready >= 3:
+                    return visible_topics, publisher_counts
+            else:
+                consecutive_ready = 0
+            time.sleep(0.10)
+        return visible_topics, publisher_counts
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
 
 
 def print_ros_graph_diagnostics(topics: set[str]) -> None:
@@ -271,16 +278,20 @@ def main() -> int:
     args = build_parser().parse_args()
     validate_args(args)
 
-    try:
-        visible_topics = available_topics()
-    except (FileNotFoundError, RuntimeError) as exc:
-        print(f"ERROR: ROS2 topic discovery failed: {exc}", file=sys.stderr)
-        return 2
-
     required_topics = set(args.require_topic)
     if args.profile == "lerobot":
         required_topics.update(LEROBOT_REQUIRED_TOPICS)
         required_topics.update((args.head_topic, args.wrist_topic))
+
+    try:
+        visible_topics, publisher_counts = discover_required_publishers(
+            required_topics,
+            REQUIRED_PUBLISHER_WAIT_SECONDS,
+        )
+    except RuntimeError as exc:
+        print(f"ERROR: ROS2 topic discovery failed: {exc}", file=sys.stderr)
+        return 2
+
     missing_required = sorted(required_topics - visible_topics)
     if missing_required:
         print(
@@ -289,9 +300,8 @@ def main() -> int:
         )
         return 3
 
-    missing_publishers = wait_for_required_publishers(
-        required_topics,
-        REQUIRED_PUBLISHER_WAIT_SECONDS,
+    missing_publishers = sorted(
+        topic for topic, count in publisher_counts.items() if count < 1
     )
     if missing_publishers:
         print(
