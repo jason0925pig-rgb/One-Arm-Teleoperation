@@ -20,6 +20,7 @@ from export_rosbag_to_lerobot import (
     _feature_schema,
     _schema_matches,
     _validate_stream_type,
+    latched_previous_sample,
     nearest_sample,
     previous_sample,
     uniform_grid_ns,
@@ -46,6 +47,16 @@ class TimestampSelectionTests(unittest.TestCase):
 
     def test_previous_sample_rejects_old_executed_action(self) -> None:
         self.assertIsNone(previous_sample([0, 10], 20, 9))
+
+    def test_latched_previous_sample_keeps_old_gripper_state(self) -> None:
+        selected = latched_previous_sample([0, 10], 10_000, 5)
+        self.assertIsNotNone(selected)
+        assert selected is not None
+        self.assertEqual(selected.index, 1)
+        self.assertEqual(selected.skew_ns, 9_990)
+
+    def test_latched_previous_sample_never_borrows_future_state(self) -> None:
+        self.assertIsNone(latched_previous_sample([10, 20], 9, 5))
 
     def test_uniform_grid_is_exactly_frame_index_based(self) -> None:
         grid = uniform_grid_ns(1_000_000_000, 1_100_000_000, 30)

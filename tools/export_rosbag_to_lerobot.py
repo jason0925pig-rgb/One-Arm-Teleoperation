@@ -233,6 +233,25 @@ def previous_sample(
     return SelectedSample(index=index, skew_ns=age)
 
 
+def latched_previous_sample(
+    times_ns: Sequence[int],
+    target_ns: int,
+    _maximum_age_ns: int,
+) -> SelectedSample | None:
+    """Select the most recent event whose value remains in force.
+
+    ``executed_gripper_command`` is published when OPEN/CLOSED changes, not as
+    a periodic heartbeat.  Its last value therefore remains valid until the
+    next event, even when it is older than the freshness limit used for
+    periodically published contact and feedback-valid observations.
+    """
+
+    index = bisect.bisect_right(times_ns, target_ns) - 1
+    if index < 0:
+        return None
+    return SelectedSample(index=index, skew_ns=target_ns - times_ns[index])
+
+
 def uniform_grid_ns(start_ns: int, end_ns: int, fps: int) -> list[int]:
     if fps <= 0 or end_ns < start_ns:
         return []
@@ -696,7 +715,9 @@ def main() -> int:
         # The action stored at frame t must already have been accepted by the
         # SDK. Never borrow a command carrying a later timestamp.
         args.action_topic: (previous_sample, action_limit),
-        args.gripper_action_topic: (previous_sample, discrete_limit),
+        # This is a latched transition event. OPEN/CLOSED remains authoritative
+        # until the controller publishes the opposite executed command.
+        args.gripper_action_topic: (latched_previous_sample, discrete_limit),
         args.gripper_feedback_valid_topic: (
             previous_sample,
             discrete_limit,
