@@ -400,12 +400,59 @@ wait_for_record_topics() {
     "${HEAD_TOPIC}"
     "${WRIST_TOPIC}"
   )
-  for topic in "${topics[@]}"; do
-    if ! wait_for_topic_publisher_stable "${topic}" 30 6; then
-      print_topic_diagnostics "${topics[@]}"
-      return 1
-    fi
-  done
+
+  # Keep one DDS participant alive while checking every required publisher.
+  # Starting a fresh rclpy process for every sample makes discovery restart on
+  # every poll and can report false zeroes on Humble even though the publisher
+  # is healthy. Three consecutive snapshots from one participant still reject
+  # a genuinely transient endpoint without requiring repeated DDS discovery.
+  if ! python3 - "${topics[@]}" <<'PY'
+import os
+import sys
+import time
+
+import rclpy
+from rclpy.node import Node
+
+topics = sys.argv[1:]
+rclpy.init(args=None)
+node = Node(f"onearm_record_topic_gate_{os.getpid()}")
+deadline = time.monotonic() + 30.0
+consecutive_ready = 0
+last_counts = {topic: 0 for topic in topics}
+try:
+    while time.monotonic() < deadline:
+        rclpy.spin_once(node, timeout_sec=0.10)
+        last_counts = {
+            topic: len(node.get_publishers_info_by_topic(topic))
+            for topic in topics
+        }
+        if all(count > 0 for count in last_counts.values()):
+            consecutive_ready += 1
+            if consecutive_ready >= 3:
+                for topic, count in last_counts.items():
+                    print(f"required topic ready: {topic} publishers={count}")
+                raise SystemExit(0)
+        else:
+            consecutive_ready = 0
+        time.sleep(0.10)
+
+    for topic, count in last_counts.items():
+        state = "ready" if count > 0 else "MISSING"
+        print(
+            f"required topic {state}: {topic} publishers={count}",
+            file=sys.stderr,
+        )
+    raise SystemExit(1)
+finally:
+    node.destroy_node()
+    rclpy.shutdown()
+PY
+  then
+    echo "ERROR: required dataset topics did not become ready." >&2
+    print_topic_diagnostics "${topics[@]}"
+    return 10
+  fi
   echo "DATASET_REQUIRED_TOPICS_READY"
 }
 
@@ -426,9 +473,12 @@ start_recording() {
     echo "ERROR: an episode recorder is already running." >&2
     return 3
   fi
+  # A previous failure may have left a valid but unrelated recorder log. Do
+  # not print it as if it belonged to this startup attempt.
+  rm -f -- "$(component_log_file recorder)"
   preflight_storage
   configure_background_cpu_set
-  wait_for_record_topics
+  wait_for_record_topics || return $?
   task="$(printf '%s' "${task_base64}" | base64 --decode)"
   operator="$(printf '%s' "${operator_base64}" | base64 --decode)"
   [[ -n "${task}" && "${task}" == "${task#"${task%%[![:space:]]*}"}" &&
@@ -542,9 +592,27 @@ archive_runtime_logs() {
   done
 }
 
+resolve_episode_dir() {
+  local episode_name="${1:-}"
+  if [[ -n "${episode_name}" ]]; then
+    [[ "${episode_name}" =~ ^[0-9]{8}_[0-9]{6}_[A-Za-z0-9_-]+$ ]] || {
+      echo "ERROR: refusing unexpected episode name: ${episode_name}" >&2
+      return 14
+    }
+    printf '%s/%s\n' "${RAW_ROOT}" "${episode_name}"
+    return 0
+  fi
+  [[ -s "${EPISODE_PATH_FILE}" ]] || {
+    echo "ERROR: no completed episode path is available." >&2
+    return 10
+  }
+  printf '%s\n' "$(<"${EPISODE_PATH_FILE}")"
+}
+
 finalize_episode() {
   local outcome="$1"
   local repo_id="$2"
+  local episode_name="${3:-}"
   local episode_dir
   [[ "${outcome}" == "success" || "${outcome}" == "failure" ]] || {
     echo "ERROR: outcome must be success or failure." >&2
@@ -554,16 +622,16 @@ finalize_episode() {
     echo "ERROR: repo_id must have owner/name form." >&2
     return 2
   }
-  [[ -s "${EPISODE_PATH_FILE}" ]] || {
-    echo "ERROR: no completed episode path is available." >&2
-    return 10
-  }
   if [[ "${outcome}" == "failure" ]]; then
-    discard_episode
+    discard_episode "${episode_name}"
     echo "EPISODE_FAILURE_DISCARDED_NO_RAW_KEPT"
     return 0
   fi
-  episode_dir="$(<"${EPISODE_PATH_FILE}")"
+  episode_dir="$(resolve_episode_dir "${episode_name}")" || return $?
+  [[ -d "${episode_dir}" ]] || {
+    echo "ERROR: episode directory is missing: ${episode_dir}" >&2
+    return 10
+  }
   archive_runtime_logs "${episode_dir}"
   python3 "${PROJECT_ROOT}/tools/set_episode_outcome.py" \
     "${episode_dir}" \
@@ -600,19 +668,20 @@ PY
 }
 
 discard_episode() {
+  local episode_name="${1:-}"
   local episode_dir
   local episode_real
   local raw_root_real
-  [[ -s "${EPISODE_PATH_FILE}" ]] || {
-    echo "ERROR: no completed episode path is available to discard." >&2
-    return 10
-  }
   if component_alive recorder; then
     echo "ERROR: refusing to discard while the recorder is still running." >&2
     return 13
   fi
-  episode_dir="$(<"${EPISODE_PATH_FILE}")"
+  episode_dir="$(resolve_episode_dir "${episode_name}")" || return $?
   [[ -d "${episode_dir}" ]] || {
+    if [[ -n "${episode_name}" ]]; then
+      echo "EPISODE_ALREADY_ABSENT=${episode_dir}"
+      return 0
+    fi
     echo "ERROR: episode directory is missing: ${episode_dir}" >&2
     return 10
   }
@@ -631,7 +700,10 @@ discard_episode() {
     return 13
   fi
   rm -rf -- "${episode_real}"
-  rm -f -- "${EPISODE_PATH_FILE}"
+  if [[ -s "${EPISODE_PATH_FILE}" ]] &&
+     [[ "$(<"${EPISODE_PATH_FILE}")" == "${episode_dir}" ]]; then
+    rm -f -- "${EPISODE_PATH_FILE}"
+  fi
   echo "EPISODE_DISCARDED=${episode_real}"
 }
 
@@ -669,18 +741,18 @@ case "${ACTION}" in
     stop_all
     ;;
   finalize)
-    [[ $# -eq 3 ]] || {
-      echo "Usage: $0 finalize {success|failure} OWNER/DATASET" >&2
+    [[ $# -eq 3 || $# -eq 4 ]] || {
+      echo "Usage: $0 finalize {success|failure} OWNER/DATASET [EPISODE_NAME]" >&2
       exit 2
     }
-    finalize_episode "$2" "$3"
+    finalize_episode "$2" "$3" "${4:-}"
     ;;
   discard)
-    [[ $# -eq 1 ]] || {
-      echo "Usage: $0 discard" >&2
+    [[ $# -eq 1 || $# -eq 2 ]] || {
+      echo "Usage: $0 discard [EPISODE_NAME]" >&2
       exit 2
     }
-    discard_episode
+    discard_episode "${2:-}"
     ;;
   status)
     show_status

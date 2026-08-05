@@ -649,7 +649,7 @@ if ($script:EpisodeRecordingStarted) {
     try {
         if ($userDiscardRequested) {
             Invoke-CheckedSsh `
-                "cd $remoteProject && ${remoteEnvironment}bash tools/ubuntu_dataset_episode.sh discard"
+                "cd $remoteProject && ${remoteEnvironment}bash tools/ubuntu_dataset_episode.sh discard '$SessionName'"
             if (
                 $null -ne $script:SenderSessionPathFile -and
                 (Test-Path -LiteralPath $script:SenderSessionPathFile -PathType Leaf)
@@ -666,7 +666,7 @@ if ($script:EpisodeRecordingStarted) {
         }
         else {
             Invoke-CheckedSsh `
-                "cd $remoteProject && ${remoteEnvironment}bash tools/ubuntu_dataset_episode.sh finalize '$outcome' '$DatasetRepoId'"
+                "cd $remoteProject && ${remoteEnvironment}bash tools/ubuntu_dataset_episode.sh finalize '$outcome' '$DatasetRepoId' '$SessionName'"
         }
     }
     catch {
