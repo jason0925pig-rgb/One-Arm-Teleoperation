@@ -129,10 +129,30 @@ stop_component_group() {
 }
 
 topic_publisher_count() {
-  local output count
-  output="$(ros2 topic info "$1" 2>/dev/null || true)"
-  count="$(sed -n 's/^Publisher count: //p' <<<"${output}")"
-  printf '%s\n' "${count:-0}"
+  python3 - "$1" <<'PY' 2>/dev/null || printf '0\n'
+import os
+import sys
+import time
+
+import rclpy
+from rclpy.node import Node
+
+topic = sys.argv[1]
+rclpy.init(args=None)
+node = Node(f"onearm_topic_count_probe_{os.getpid()}")
+try:
+    deadline = time.monotonic() + 0.5
+    count = 0
+    while time.monotonic() < deadline:
+        rclpy.spin_once(node, timeout_sec=0.05)
+        count = len(node.get_publishers_info_by_topic(topic))
+        if count > 0:
+            break
+    print(count)
+finally:
+    node.destroy_node()
+    rclpy.shutdown()
+PY
 }
 
 print_topic_diagnostics() {
@@ -140,6 +160,7 @@ print_topic_diagnostics() {
   echo "--- ROS 2 graph diagnostics ---" >&2
   echo "ROS_DISTRO=${ROS_DISTRO:-unknown}" >&2
   echo "PROJECT_ROOT=${PROJECT_ROOT}" >&2
+  ros2 daemon stop >/dev/null 2>&1 || true
   ros2 pkg prefix servo_controller 2>/dev/null | sed 's/^/servo_controller prefix: /' >&2 || true
   ros2 pkg prefix one_arm_teleop_bridge 2>/dev/null | sed 's/^/one_arm_teleop_bridge prefix: /' >&2 || true
   echo "Nodes:" >&2
@@ -306,6 +327,11 @@ PY
 }
 
 preflight_all() {
+  # The ROS 2 CLI daemon can become stale after interrupted launches and then
+  # make `ros2 topic info/list` fail with `rclpy.ok()` XMLRPC errors. Stopping
+  # it is safe for running ROS nodes and keeps diagnostics from poisoning the
+  # camera startup path.
+  ros2 daemon stop >/dev/null 2>&1 || true
   preflight_storage
   preflight_cameras
   preflight_python
