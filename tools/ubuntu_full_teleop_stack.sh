@@ -38,6 +38,11 @@ source "${ROS_SETUP}"
 source "${WORKSPACE_SETUP}"
 set -u
 
+# Interrupted launches can leave the ROS 2 CLI daemon with stale graph state.
+# Stopping it does not stop ROS nodes; it only forces the next `ros2 ...`
+# diagnostic call to reconnect to the live graph.
+ros2 daemon stop >/dev/null 2>&1 || true
+
 configure_cpu_sets() {
   local cpu_count
   cpu_count="$(nproc)"
@@ -554,7 +559,14 @@ wait_for_leader_preview() {
     sleep 0.25
   done
   echo "ERROR: no safe Windows preview arrived within 120 seconds." >&2
-  [[ -n "${output}" ]] && printf '%s\n' "${output}" >&2
+  if [[ -n "${output}" ]]; then
+    echo "--- last /teleop/bridge_status sample ---" >&2
+    printf '%s\n' "${output}" >&2
+  else
+    echo "No /teleop/bridge_status sample was readable." >&2
+  fi
+  echo "--- bridge log tail ---" >&2
+  tail -n 120 "$(component_log_file bridge)" >&2 || true
   return 1
 }
 
@@ -584,7 +596,10 @@ verify_robot_safe_to_arm() {
 
 arm_stack() {
   ensure_components_running
-  wait_for_leader_preview
+  if ! wait_for_leader_preview; then
+    echo "ERROR: arming stopped before hardware power/enable because leader UDP preview was not accepted." >&2
+    exit 8
+  fi
   verify_robot_safe_to_arm
 
   echo "Safety checks passed. Applying explicit staged hardware gates..."

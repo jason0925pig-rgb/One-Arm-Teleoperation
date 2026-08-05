@@ -180,6 +180,11 @@ class UdpLeaderBridge(Node):
         self.consecutive_accepted_packets = 0
         self.rejected_packets = 0
         self.last_rejection_reason = "none"
+        self.last_source_ip = "none"
+        self.last_source_port = 0
+        self.last_udp_datagram_received = 0.0
+        self.last_packet_diagnostic_log = 0.0
+        self.last_logged_session: str | None = None
         self.stop_requests = 0
         self.held_joint_samples = 0
         self.last_held_joint_indices: tuple[int, ...] = ()
@@ -353,6 +358,22 @@ class UdpLeaderBridge(Node):
             return 0.0
         return (len(self.accepted_packet_times) - 1) / duration
 
+    def _remember_rejection(self, reason: str) -> None:
+        self.rejected_packets += 1
+        self.consecutive_accepted_packets = 0
+        self.last_rejection_reason = reason.replace(";", ",")
+        now = time.monotonic()
+        if now - self.last_packet_diagnostic_log >= 1.0:
+            self.get_logger().warn(
+                "Rejected leader UDP packet: "
+                f"reason={self.last_rejection_reason}; "
+                f"source={self.last_source_ip}:{self.last_source_port}; "
+                f"expected_source_ip={self.expected_source_ip or 'UNCONFIGURED'}; "
+                f"accepted_packets={self.accepted_packets}; "
+                f"rejected_packets={self.rejected_packets}"
+            )
+            self.last_packet_diagnostic_log = now
+
     def _follower_state_callback(self, msg: JointState) -> None:
         try:
             self.last_follower_position = self._ordered_positions(msg)
@@ -383,10 +404,11 @@ class UdpLeaderBridge(Node):
                 if self.mapping_enabled:
                     self._request_stop(f"UDP receive error: {exc}")
                 return
+            self.last_source_ip = source[0]
+            self.last_source_port = int(source[1])
+            self.last_udp_datagram_received = time.monotonic()
             if self.expected_source_ip and source[0] != self.expected_source_ip:
-                self.rejected_packets += 1
-                self.consecutive_accepted_packets = 0
-                self.last_rejection_reason = (
+                self._remember_rejection(
                     f"unexpected_source:{source[0]}"
                 )
                 continue
@@ -452,16 +474,12 @@ class UdpLeaderBridge(Node):
                 leader_position = self.unwrapper.update(sanitized_pulses)
                 filtered_position = self.signal_filter.update(leader_position)
             except PersistentJointDropoutError as exc:
-                self.rejected_packets += 1
-                self.consecutive_accepted_packets = 0
-                self.last_rejection_reason = str(exc).replace(";", ",")
+                self._remember_rejection(str(exc))
                 if self.mapping_enabled:
                     self._request_stop(str(exc))
                 continue
             except (PacketError, SafetyError) as exc:
-                self.rejected_packets += 1
-                self.consecutive_accepted_packets = 0
-                self.last_rejection_reason = str(exc).replace(";", ",")
+                self._remember_rejection(str(exc))
                 if self.mapping_enabled and self.stop_on_rejected_packet:
                     self._request_stop(str(exc))
                 elif self.mapping_enabled:
@@ -498,6 +516,25 @@ class UdpLeaderBridge(Node):
                     self.last_dropout_warning = received_at
             self.last_leader_received = received_at
             self.accepted_packet_times.append(received_at)
+            if (
+                new_session
+                or self.accepted_packets in (1, 5)
+                or (
+                    not self.mapping_enabled
+                    and received_at - self.last_packet_diagnostic_log >= 5.0
+                )
+            ):
+                self.get_logger().info(
+                    "Accepted leader UDP packet: "
+                    f"session={frame.session_id}; "
+                    f"sequence={frame.sequence}; "
+                    f"source={self.last_source_ip}:{self.last_source_port}; "
+                    f"deadman_held={frame.deadman_held}; "
+                    f"packet_age_s={packet_age:.3f}; "
+                    f"consecutive_accepted_packets={self.consecutive_accepted_packets}; "
+                    f"accepted_packets={self.accepted_packets}"
+                )
+                self.last_packet_diagnostic_log = received_at
             raw_msg = Float64MultiArray()
             raw_msg.data = [float(value) for value in leader_position]
             self.raw_pub.publish(raw_msg)
@@ -572,6 +609,8 @@ class UdpLeaderBridge(Node):
             f"deadman_held={self.last_deadman_held};"
             f"session={self.current_session or 'none'};"
             f"sequence={self.last_sequence if self.last_sequence is not None else -1};"
+            f"last_source={self.last_source_ip}:{self.last_source_port};"
+            f"last_udp_datagram_age_s={time.monotonic() - self.last_udp_datagram_received if self.last_udp_datagram_received > 0.0 else -1:.3f};"
             f"packet_age_s={self.last_packet_age_seconds if self.last_packet_age_seconds is not None else -1:.3f};"
             f"packet_rate_hz={self._recent_packet_rate_hz():.2f};"
             f"minimum_packet_rate_hz={self.minimum_packet_rate_hz:.2f};"
