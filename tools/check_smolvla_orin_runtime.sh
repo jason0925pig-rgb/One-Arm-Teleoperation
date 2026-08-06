@@ -8,9 +8,11 @@ WORKSPACE_SETUP="${PROJECT_ROOT}/install/setup.bash"
 [[ -r "${ROS_SETUP}" ]] || { echo "ERROR: missing ${ROS_SETUP}." >&2; exit 2; }
 [[ -r "${WORKSPACE_SETUP}" ]] || { echo "ERROR: missing ${WORKSPACE_SETUP}." >&2; exit 2; }
 # shellcheck disable=SC1090
+set +u
 source "${ROS_SETUP}"
 # shellcheck disable=SC1090
 source "${WORKSPACE_SETUP}"
+set -u
 # shellcheck disable=SC1091
 source "${PROJECT_ROOT}/tools/smolvla_orin_env.sh"
 

@@ -21,9 +21,11 @@ CLIENT_DEVICE="${SMOLVLA_CLIENT_DEVICE:-cpu}"
 [[ -x "${VENV}/bin/python" ]] || { echo "ERROR: missing ${VENV}/bin/python" >&2; exit 2; }
 
 # shellcheck disable=SC1090
+set +u
 source "${ROS_SETUP}"
 # shellcheck disable=SC1090
 source "${WORKSPACE_SETUP}"
+set -u
 
 "${VENV}/bin/python" - <<'PY'
 import cv2

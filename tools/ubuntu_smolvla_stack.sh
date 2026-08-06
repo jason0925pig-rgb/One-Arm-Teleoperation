@@ -20,9 +20,11 @@ mkdir -p "${RUNTIME_DIR}"
   exit 2
 }
 # shellcheck disable=SC1090
+set +u
 source "/opt/ros/${ROS_DISTRO_NAME}/setup.bash"
 # shellcheck disable=SC1090
 source "${PROJECT_ROOT}/install/setup.bash"
+set -u
 
 pid_file() { printf '%s/%s.pid\n' "${RUNTIME_DIR}" "$1"; }
 log_file() { printf '%s/%s.log\n' "${RUNTIME_DIR}" "$1"; }
