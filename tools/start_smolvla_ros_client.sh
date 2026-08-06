@@ -9,6 +9,12 @@ VENV="${SMOLVLA_CLIENT_VENV:-${HOME}/work/telop/venvs/lerobot-client}"
 SERVER_ADDRESS="${SMOLVLA_SERVER_ADDRESS:?set SMOLVLA_SERVER_ADDRESS, for example 192.168.2.110:8080}"
 SERVER_MODEL_PATH="${SMOLVLA_SERVER_MODEL_PATH:?set SMOLVLA_SERVER_MODEL_PATH to the checkpoint path on the inference server}"
 TASK="${SMOLVLA_TASK:-把那瓶水放进箱子里。}"
+ACTIONS_PER_CHUNK="${SMOLVLA_ACTIONS_PER_CHUNK:-10}"
+CHUNK_SIZE_THRESHOLD="${SMOLVLA_CHUNK_SIZE_THRESHOLD:-0.5}"
+FPS="${SMOLVLA_FPS:-30}"
+AGGREGATE_FN="${SMOLVLA_AGGREGATE_FN:-weighted_average}"
+POLICY_DEVICE="${SMOLVLA_POLICY_DEVICE:-cuda}"
+CLIENT_DEVICE="${SMOLVLA_CLIENT_DEVICE:-cpu}"
 
 [[ -r "${ROS_SETUP}" ]] || { echo "ERROR: missing ${ROS_SETUP}" >&2; exit 2; }
 [[ -r "${WORKSPACE_SETUP}" ]] || { echo "ERROR: build the ROS workspace first" >&2; exit 2; }
@@ -30,6 +36,7 @@ PY
 
 echo "Starting observation/action client; robot action publication remains disabled."
 echo "Enable only after preflight with: ros2 service call /smolvla/set_enabled std_srvs/srv/SetBool '{data: true}'"
+echo "Policy server=${SERVER_ADDRESS} actions_per_chunk=${ACTIONS_PER_CHUNK} fps=${FPS}"
 exec "${VENV}/bin/python" -m lerobot_robot_armstrong_ros2.async_client \
   --robot.type=armstrong_ros2 \
   --robot.id=armstrong_right \
@@ -37,9 +44,9 @@ exec "${VENV}/bin/python" -m lerobot_robot_armstrong_ros2.async_client \
   --server_address="${SERVER_ADDRESS}" \
   --policy_type=smolvla \
   --pretrained_name_or_path="${SERVER_MODEL_PATH}" \
-  --policy_device=cuda \
-  --client_device=cpu \
-  --actions_per_chunk=10 \
-  --chunk_size_threshold=0.5 \
-  --fps=30 \
-  --aggregate_fn_name=weighted_average
+  --policy_device="${POLICY_DEVICE}" \
+  --client_device="${CLIENT_DEVICE}" \
+  --actions_per_chunk="${ACTIONS_PER_CHUNK}" \
+  --chunk_size_threshold="${CHUNK_SIZE_THRESHOLD}" \
+  --fps="${FPS}" \
+  --aggregate_fn_name="${AGGREGATE_FN}"

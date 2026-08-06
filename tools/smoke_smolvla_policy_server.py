@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import pickle  # nosec: test talks only to an explicitly trusted local server
 import time
 from pathlib import Path
@@ -32,6 +33,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repo-id", default="local/onearm_tele")
     parser.add_argument("--sample-index", type=int, default=0)
     parser.add_argument("--actions-per-chunk", type=int, default=10)
+    parser.add_argument("--requests", type=int, default=1)
+    parser.add_argument(
+        "--video-backend",
+        choices=("torchcodec", "pyav"),
+        default=os.environ.get("SMOLVLA_VIDEO_BACKEND", "torchcodec"),
+    )
     parser.add_argument("--task", default="把那瓶水放进箱子里。")
     parser.add_argument("--timeout", type=float, default=120.0)
     return parser.parse_args()
@@ -57,7 +64,7 @@ def main() -> int:
     dataset = LeRobotDataset(
         repo_id=args.repo_id,
         root=dataset_root,
-        video_backend="torchcodec",
+        video_backend=args.video_backend,
     )
     sample = dataset[args.sample_index]
     state = sample["observation.state"].detach().float().cpu().tolist()
@@ -84,13 +91,6 @@ def main() -> int:
         "wrist_right": image_to_uint8_hwc(sample["observation.images.wrist_right"]),
         "task": args.task,
     }
-    observation = TimedObservation(
-        timestamp=time.time(),
-        observation=raw_observation,
-        timestep=0,
-        must_go=True,
-    )
-
     channel = grpc.insecure_channel(
         args.server,
         grpc_channel_options(initial_backoff="0.0333s"),
@@ -103,15 +103,25 @@ def main() -> int:
             services_pb2.PolicySetup(data=pickle.dumps(policy)),
             timeout=args.timeout,
         )
-        chunks = send_bytes_in_chunks(
-            pickle.dumps(observation),
-            services_pb2.Observation,
-            log_prefix="[SMOKE] Observation",
-            silent=True,
-        )
-        stub.SendObservations(chunks, timeout=args.timeout)
-        response = stub.GetActions(services_pb2.Empty(), timeout=args.timeout)
-        actions = pickle.loads(response.data)  # nosec: trusted local policy server
+        latencies = []
+        for request_index in range(args.requests):
+            observation = TimedObservation(
+                timestamp=time.time(),
+                observation=raw_observation,
+                timestep=request_index * args.actions_per_chunk,
+                must_go=True,
+            )
+            request_start = time.perf_counter()
+            chunks = send_bytes_in_chunks(
+                pickle.dumps(observation),
+                services_pb2.Observation,
+                log_prefix="[SMOKE] Observation",
+                silent=True,
+            )
+            stub.SendObservations(chunks, timeout=args.timeout)
+            response = stub.GetActions(services_pb2.Empty(), timeout=args.timeout)
+            actions = pickle.loads(response.data)  # nosec: trusted local policy server
+            latencies.append(time.perf_counter() - request_start)
     finally:
         channel.close()
 
@@ -122,7 +132,8 @@ def main() -> int:
         raise RuntimeError(f"invalid action chunk: shape={values.shape}")
     print(
         "SMOLVLA_POLICY_SERVER_SMOKE_OK "
-        f"actions={values.shape} min={values.min(axis=0).tolist()} max={values.max(axis=0).tolist()}"
+        f"requests={args.requests} actions={values.shape} "
+        f"latency_s={latencies} min={values.min(axis=0).tolist()} max={values.max(axis=0).tolist()}"
     )
     return 0
 

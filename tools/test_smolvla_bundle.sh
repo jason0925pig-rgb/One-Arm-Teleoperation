@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUNDLE_ROOT="${1:?usage: test_smolvla_bundle.sh BUNDLE_ROOT DATASET_ROOT}"
 DATASET_ROOT="${2:?usage: test_smolvla_bundle.sh BUNDLE_ROOT DATASET_ROOT}"
 VENV="${SMOLVLA_VENV:-/ssd/hanbo/TNNLS_2026/envs/lerobot-v0.4.4}"
 PHYSICAL_GPU="${SMOLVLA_PHYSICAL_GPU:-4}"
 PORT="${SMOLVLA_SMOKE_PORT:-18080}"
+ACTIONS_PER_CHUNK="${SMOLVLA_ACTIONS_PER_CHUNK:-10}"
+SMOKE_TIMEOUT="${SMOLVLA_SMOKE_TIMEOUT:-120}"
+SMOKE_REQUESTS="${SMOLVLA_SMOKE_REQUESTS:-1}"
 LOG_FILE="${TMPDIR:-/tmp}/smolvla_policy_server_smoke_${USER:-user}.log"
 SERVER_PID=""
 
@@ -61,14 +65,16 @@ PY
 done
 
 CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES="${PHYSICAL_GPU}" \
-  "${VENV}/bin/python" deployment/tools/smoke_smolvla_policy_server.py \
+  "${VENV}/bin/python" "${TOOLS_DIR}/smoke_smolvla_policy_server.py" \
     --server "127.0.0.1:${PORT}" \
     --checkpoint checkpoint \
     --dataset-root "${DATASET_ROOT}" \
     --repo-id local/onearm_tele \
     --sample-index 0 \
-    --actions-per-chunk 10 \
-    --timeout 120
+    --actions-per-chunk "${ACTIONS_PER_CHUNK}" \
+    --requests "${SMOKE_REQUESTS}" \
+    --video-backend "${SMOLVLA_VIDEO_BACKEND:-torchcodec}" \
+    --timeout "${SMOKE_TIMEOUT}"
 
 cleanup
 SERVER_PID=""
