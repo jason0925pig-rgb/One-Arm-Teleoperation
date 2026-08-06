@@ -92,7 +92,7 @@ call_bool() {
 
 service_available() {
   local service="$1" services
-  services="$(timeout 3 ros2 service list --no-daemon --spin-time 0.5 2>/dev/null)" || return 1
+  services="$(timeout 5 ros2 service list --no-daemon --spin-time 1.5 2>/dev/null)" || return 1
   grep -Fxq "${service}" <<<"${services}"
 }
 
@@ -226,16 +226,33 @@ enable_policy() {
 
 disable_policy() {
   try_bool /smolvla/set_enabled false
-  try_bool /right_arm/set_motion_enabled false
+  if alive arm; then
+    call_bool /right_arm/set_motion_enabled false || true
+  else
+    try_bool /right_arm/set_motion_enabled false
+  fi
   echo "SMOLVLA_POLICY_DISABLED"
 }
 
 stop_stack() {
   try_bool /smolvla/set_enabled false
-  try_bool /right_arm/set_motion_enabled false
-  try_bool /right_arm/set_gripper_enabled false
-  try_bool /right_arm/set_robot_enabled false
-  try_bool /right_arm/set_powered_on false
+  if alive arm; then
+    call_bool /right_arm/set_motion_enabled false || true
+  else
+    try_bool /right_arm/set_motion_enabled false
+  fi
+  if alive gripper; then
+    call_bool /right_arm/set_gripper_enabled false || true
+  else
+    try_bool /right_arm/set_gripper_enabled false
+  fi
+  if alive arm; then
+    call_bool /right_arm/set_robot_enabled false || true
+    call_bool /right_arm/set_powered_on false || true
+  else
+    try_bool /right_arm/set_robot_enabled false
+    try_bool /right_arm/set_powered_on false
+  fi
   stop_component gripper
   stop_component arm
   stop_component cameras
