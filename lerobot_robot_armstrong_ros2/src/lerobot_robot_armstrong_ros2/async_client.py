@@ -27,6 +27,8 @@ class ArmstrongRobotClient(RobotClient):
 
     def control_loop_observation(self, task: str, verbose: bool = False):
         try:
+            if not self.running:
+                return None
             start_time = time.perf_counter()
             raw_observation = self.robot.get_observation()
             raw_observation["task"] = task
@@ -47,6 +49,8 @@ class ArmstrongRobotClient(RobotClient):
                 observation.must_go = self.must_go.is_set() and (
                     self.action_chunk_size <= 0 or threshold_reached
                 )
+            if not self.running:
+                return None
             sent = self.send_observation(observation)
             if sent and observation.must_go:
                 self.must_go.clear()
@@ -71,9 +75,8 @@ def main(cfg: RobotClientConfig) -> None:
     client = ArmstrongRobotClient(cfg)
 
     def request_stop(signum, _frame) -> None:
-        client.logger.warning("Stop signal %s received; closing the async client", signum)
+        client.logger.warning("Stop signal %s received; stopping the async client", signum)
         client.shutdown_event.set()
-        client.channel.close()
 
     signal.signal(signal.SIGINT, request_stop)
     signal.signal(signal.SIGTERM, request_stop)
@@ -84,8 +87,10 @@ def main(cfg: RobotClientConfig) -> None:
     try:
         client.control_loop(task=cfg.task)
     finally:
+        client.shutdown_event.set()
+        action_receiver.join(timeout=5.0)
         client.stop()
-        action_receiver.join()
+        action_receiver.join(timeout=2.0)
         if cfg.debug_visualize_queue_size:
             visualize_action_queue_size(client.action_queue_size)
         client.logger.info("Client stopped")
