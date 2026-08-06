@@ -120,10 +120,51 @@ wait_for_fresh_joint_stream() {
   timeout 15 ros2 topic echo --once /right_arm/joint_states >/dev/null
 }
 
+pre_arm_safety_check() {
+  local output
+  if output="$(python3 "${PROJECT_ROOT}/tools/wait_for_string_topic.py" \
+      /right_arm/safety_status \
+      --timeout 4 \
+      --contains connected=1 \
+      --contains feedback_valid=1 \
+      --contains robot_powered_on=0 \
+      --contains robot_enabled=0 \
+      --contains robot_emergency_stop=0 \
+      --contains robot_protective_stop=0 \
+      --contains robot_socket_connected=1 \
+      --contains robot_error_code=0 \
+      --contains motion_enabled=0 2>&1)"; then
+    printf '%s\n' "${output}"
+    echo "PRE_ARM_SAFETY_CHECK_OK_NO_MOTION"
+    return 0
+  fi
+
+  printf '%s\n' "${output}" >&2
+  if grep -q 'robot_emergency_stop=1' <<<"${output}"; then
+    echo "ERROR: the physical E-stop is pressed. Release it, verify the controller error clears, then restart this launcher." >&2
+  elif grep -q 'robot_protective_stop=1' <<<"${output}"; then
+    echo "ERROR: robot protective stop is active. Clear the physical cause and controller protective stop, then restart." >&2
+  elif ! grep -q 'robot_error_code=0' <<<"${output}"; then
+    echo "ERROR: the robot controller reports a nonzero error code. Clear it on the controller before ARM." >&2
+  elif ! grep -q 'robot_socket_connected=1' <<<"${output}"; then
+    echo "ERROR: the Armstrong controller socket is not connected." >&2
+  elif grep -Eq 'robot_powered_on=1|robot_enabled=1|motion_enabled=1' <<<"${output}"; then
+    echo "ERROR: the robot is not in the required power-off, disabled, motion-off starting state." >&2
+  else
+    echo "ERROR: robot pre-ARM safety status was not healthy and current within four seconds." >&2
+  fi
+  return 1
+}
+
 if alive_pid_file "${SERVER_PID_FILE}" || alive_pid_file "${CLIENT_PID_FILE}"; then
   echo "ERROR: the one-window SmolVLA launcher is already running." >&2
   exit 3
 fi
+
+# A run that stops before the policy client starts must never print errors
+# retained in the shared runtime directory from an earlier rollout.
+: >"${SERVER_LOG}"
+: >"${CLIENT_LOG}"
 
 echo "============================================================"
 echo "SmolVLA / Armstrong single-window launcher"
@@ -142,6 +183,7 @@ alive_pid_file "${SERVER_PID_FILE}" || {
 }
 wait_for_server
 "${PROJECT_ROOT}/tools/ubuntu_smolvla_stack.sh" start
+pre_arm_safety_check
 
 echo
 echo "OBSERVATION_STACK_READY_NO_MOTION"
