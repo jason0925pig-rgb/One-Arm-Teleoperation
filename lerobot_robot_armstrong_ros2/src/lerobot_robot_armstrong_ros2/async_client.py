@@ -16,7 +16,7 @@ from lerobot.utils.import_utils import register_third_party_plugins
 
 
 class ArmstrongRobotClient(RobotClient):
-    """Request the next chunk before the current 30 Hz queue becomes empty.
+    """Request the next chunk before the current policy queue becomes empty.
 
     Upstream marks an observation ``must_go`` only after the queue is empty.
     That is safe for high-latency action units but causes gaps for our radian
@@ -53,9 +53,9 @@ class ArmstrongRobotClient(RobotClient):
             start_time = time.perf_counter()
             # The Orin currently needs roughly 1.5-1.7 seconds to infer a
             # 50-action chunk.  Re-publish the most recent guarded joint
-            # target at the 30 Hz client rate while a replacement chunk is in
-            # flight.  If this process dies, the lower-level watchdog still
-            # stops the arm after its configured timeout.
+            # target at the configured client rate while a replacement chunk
+            # is in flight.  If this process dies, the lower-level watchdog
+            # still stops the arm after its configured timeout.
             self.robot.resend_last_joint_command()
             raw_observation = self.robot.get_observation()
             raw_observation["task"] = task

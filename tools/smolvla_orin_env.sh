@@ -16,11 +16,15 @@ export SMOLVLA_CLIENT_VENV="${SMOLVLA_ORIN_VENV}"
 export SMOLVLA_SERVER_MODEL_PATH="${SMOLVLA_ORIN_BUNDLE}/checkpoint"
 export SMOLVLA_CACHE_ROOT="${SMOLVLA_ORIN_ROOT}/cache/smolvla"
 export SMOLVLA_TMP_ROOT="${SMOLVLA_ORIN_ROOT}/tmp/smolvla"
-export SMOLVLA_FPS="${SMOLVLA_FPS:-30}"
+# Policy action production/consumption runs at 25 Hz.  The two ROS camera
+# drivers remain independently configured and verified at 30 FPS; lowering
+# this value does not change either camera stream or the recorded video FPS.
+export SMOLVLA_FPS="${SMOLVLA_FPS:-25}"
 
 # The checkpoint produces 50 actions. Orin warm inference measured
-# 0.86-0.91 s, so requesting the next chunk with 75% still queued leaves
-# roughly 1.25 s of coverage at 30 Hz.
+# Recent on-robot inference takes about 1.6-1.8 s.  Fifty actions cover 2.0 s
+# at 25 Hz, giving the asynchronous producer a small margin instead of the
+# near-zero margin that caused the 30 Hz queue to reach zero.
 export SMOLVLA_ACTIONS_PER_CHUNK="${SMOLVLA_ACTIONS_PER_CHUNK:-50}"
 export SMOLVLA_CHUNK_SIZE_THRESHOLD="${SMOLVLA_CHUNK_SIZE_THRESHOLD:-1.0}"
 export SMOLVLA_VIDEO_BACKEND="${SMOLVLA_VIDEO_BACKEND:-pyav}"
