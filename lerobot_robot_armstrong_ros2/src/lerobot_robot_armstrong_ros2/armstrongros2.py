@@ -60,6 +60,7 @@ class ArmstrongRos2(Robot):
         self._lock = threading.Lock()
         self._joint_state: tuple[float, ...] | None = None
         self._joint_time = 0.0
+        self._arm_motion_enabled = False
         self._chest: np.ndarray | None = None
         self._chest_time = 0.0
         self._wrist: np.ndarray | None = None
@@ -148,6 +149,12 @@ class ArmstrongRos2(Robot):
             JointState, self.config.joint_state_topic, self._joint_callback, 10
         )
         self._node.create_subscription(
+            Bool,
+            self.config.motion_enabled_topic,
+            self._motion_enabled_callback,
+            10,
+        )
+        self._node.create_subscription(
             Bool, self.config.gripper_state_topic, self._gripper_callback, 10
         )
         self._node.create_subscription(
@@ -213,6 +220,23 @@ class ArmstrongRos2(Robot):
                 message.data
             )
 
+    def _motion_enabled_callback(self, message: Bool) -> None:
+        publish_stop = False
+        with self._lock:
+            self._arm_motion_enabled = bool(message.data)
+            if self._action_enabled and not self._arm_motion_enabled:
+                self._action_enabled = False
+                self._last_safe_joint_command = None
+                self._last_gripper_command = None
+                publish_stop = True
+        if publish_stop:
+            if self._node is not None:
+                self._node.get_logger().error(
+                    "Arm servo gate closed during policy control; "
+                    "policy and gripper stopped together"
+                )
+            self._publish_stop()
+
     def _chest_callback(self, message: CompressedImage) -> None:
         try:
             decoded = self._decode_image(message)
@@ -275,6 +299,10 @@ class ArmstrongRos2(Robot):
             return response
         try:
             joints, gripper_closed, _, _ = self._snapshot()
+            with self._lock:
+                arm_motion_enabled = self._arm_motion_enabled
+            if not arm_motion_enabled:
+                raise PolicySafetyError("arm servo motion gate is not enabled")
             state = (*joints, float(gripper_closed))
             validate_initial_pose(
                 state,
@@ -372,6 +400,7 @@ class ArmstrongRos2(Robot):
             policy_queue_size = self._policy_queue_size
             policy_expected_chunk_size = self._policy_expected_chunk_size
             policy_chunk_ready = self._policy_chunk_ready
+            arm_motion_enabled = self._arm_motion_enabled
         observation_ready = (
             joint_present
             and chest_present
@@ -384,6 +413,7 @@ class ArmstrongRos2(Robot):
         message.data = (
             f"connected={int(self._connected)};"
             f"action_enabled={int(self._action_enabled)};"
+            f"arm_motion_enabled={int(arm_motion_enabled)};"
             f"observation_ready={int(observation_ready)};"
             f"policy_chunk_ready={int(policy_chunk_ready)};"
             f"action_queue_size={policy_queue_size};"

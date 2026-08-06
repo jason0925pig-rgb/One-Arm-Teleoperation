@@ -25,12 +25,12 @@ safe_one_arm_servo:
     feedback_timeout_seconds: 5.0
     stop_on_command_timeout: true
     stop_on_feedback_timeout: true
-    # JAKA natively interpolates each target over step_num * 8 ms. Running
-    # the non-real-time ROS callback at 25 Hz and sending step_num=5 avoids
-    # pretending that Orin can reliably schedule an SDK call every 8 ms,
-    # while the robot controller still executes an internal 8 ms trajectory.
-    control_rate_hz: 25.0
-    servo_step_num: 5
+    # The policy publishes new targets at 25 Hz, while this lower-level loop
+    # slews between them at the JAKA SDK's proven 8 ms cadence.  The 40 ms
+    # step_num=5 overload returned ERR_INVALID_HANDLER during attended tests,
+    # so keep the established step_num=1 path until the vendor explains it.
+    control_rate_hz: 125.0
+    servo_step_num: 1
     state_rate_hz: 20.0
     control_deadline_warning_factor: 1.5
     control_deadline_abort_seconds: 0.10

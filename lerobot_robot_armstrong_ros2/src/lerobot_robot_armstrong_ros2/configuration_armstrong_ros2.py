@@ -10,6 +10,7 @@ from lerobot.robots.config import RobotConfig
 class ArmstrongRos2Config(RobotConfig):
     joint_state_topic: str = "/right_arm/joint_states"
     joint_command_topic: str = "/right_arm/teleop_joint_command"
+    motion_enabled_topic: str = "/right_arm/motion_enabled"
     gripper_state_topic: str = "/right_arm/executed_gripper_command"
     gripper_command_topic: str = "/right_arm/gripper_command"
     chest_topic: str = "/camera_chest/color/image_raw/compressed"
