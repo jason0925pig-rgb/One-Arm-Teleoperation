@@ -30,6 +30,14 @@ JOINT_NAMES = tuple(f"right_joint{index}" for index in range(1, 8))
 GRIPPER_NAME = "right_gripper_closed"
 
 
+def ros_requested_open_to_lerobot_closed(requested_open: bool) -> bool:
+    return not bool(requested_open)
+
+
+def lerobot_closed_to_ros_requested_open(closed: bool) -> bool:
+    return not bool(closed)
+
+
 class ArmstrongRos2(Robot):
     """LeRobot hardware facade over the existing safe ROS 2 controllers.
 
@@ -179,8 +187,12 @@ class ArmstrongRos2(Robot):
             self._joint_time = time.monotonic()
 
     def _gripper_callback(self, message: Bool) -> None:
+        # The safe gripper controller Bool means ``requested_open``. LeRobot
+        # uses the opposite convention for this feature: 0=open, 1=closed.
         with self._lock:
-            self._gripper_closed = bool(message.data)
+            self._gripper_closed = ros_requested_open_to_lerobot_closed(
+                message.data
+            )
 
     def _chest_callback(self, message: CompressedImage) -> None:
         try:
@@ -237,6 +249,7 @@ class ArmstrongRos2(Robot):
         if not request.data:
             self._action_enabled = False
             self._last_safe_joint_command = None
+            self._last_gripper_command = None
             self._publish_stop()
             response.success = True
             response.message = "SmolVLA action gate disabled and STOP published"
@@ -283,6 +296,7 @@ class ArmstrongRos2(Robot):
         except PolicySafetyError:
             self._action_enabled = False
             self._last_safe_joint_command = None
+            self._last_gripper_command = None
             self._publish_stop()
             raise
 
@@ -290,7 +304,9 @@ class ArmstrongRos2(Robot):
         self._publish_joint_command(self._last_safe_joint_command)
         if self._last_gripper_command is None or guarded_gripper != self._last_gripper_command:
             gripper_message = Bool()
-            gripper_message.data = guarded_gripper
+            # ROS command=True requests OPEN; guarded_gripper=True means
+            # CLOSED in the LeRobot action space, so the value must invert.
+            gripper_message.data = lerobot_closed_to_ros_requested_open(guarded_gripper)
             self._gripper_pub.publish(gripper_message)
             self._last_gripper_command = guarded_gripper
         return {
@@ -358,6 +374,7 @@ class ArmstrongRos2(Robot):
             return
         self._action_enabled = False
         self._last_safe_joint_command = None
+        self._last_gripper_command = None
         self._publish_stop()
         self._connected = False
         if self._executor is not None:

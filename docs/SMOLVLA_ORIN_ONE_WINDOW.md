@@ -22,7 +22,7 @@ cd E:\AAA__Github_Project\One-Arm-Teleoperation
 如需指定语言任务：
 
 ```powershell
-.\tools\start_smolvla_orin.cmd -Task "把那瓶水放进箱子里。"
+.\tools\start_smolvla_orin.cmd -Task "把矿泉水放进纸箱里。"
 ```
 
 脚本只在当前窗口交互，并按以下顺序推进：

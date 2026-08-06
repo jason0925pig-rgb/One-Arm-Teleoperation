@@ -15,7 +15,7 @@ source "${PROJECT_ROOT}/tools/smolvla_orin_env.sh"
 if [[ -n "${SMOLVLA_TASK_B64:-}" ]]; then
   export SMOLVLA_TASK="$(printf '%s' "${SMOLVLA_TASK_B64}" | base64 --decode)"
 fi
-export SMOLVLA_TASK="${SMOLVLA_TASK:-把那瓶水放进箱子里。}"
+export SMOLVLA_TASK="${SMOLVLA_TASK:-把矿泉水放进纸箱里。}"
 
 set +u
 # shellcheck disable=SC1091

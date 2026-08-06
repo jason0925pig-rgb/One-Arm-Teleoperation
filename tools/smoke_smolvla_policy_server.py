@@ -39,7 +39,7 @@ def parse_args() -> argparse.Namespace:
         choices=("torchcodec", "pyav"),
         default=os.environ.get("SMOLVLA_VIDEO_BACKEND", "torchcodec"),
     )
-    parser.add_argument("--task", default="把那瓶水放进箱子里。")
+    parser.add_argument("--task", default="把矿泉水放进纸箱里。")
     parser.add_argument("--timeout", type=float, default=120.0)
     return parser.parse_args()
 

@@ -109,7 +109,7 @@ cd /home/nvidia/work/telop/One-Arm-Teleoperation
 
 export SMOLVLA_SERVER_ADDRESS=<推理服务器有线IP>:8080
 export SMOLVLA_SERVER_MODEL_PATH=/path/on/server/smolvla_onearm_deployment/checkpoint
-export SMOLVLA_TASK='把那瓶水放进箱子里。'
+export SMOLVLA_TASK='把矿泉水放进纸箱里。'
 
 ./tools/start_smolvla_ros_client.sh
 ```

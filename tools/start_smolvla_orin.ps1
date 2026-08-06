@@ -6,7 +6,7 @@ param(
 $ErrorActionPreference = "Stop"
 if ([string]::IsNullOrWhiteSpace($Task)) {
     $Task = [System.Text.Encoding]::UTF8.GetString(
-        [Convert]::FromBase64String("5oqK6YKj55O25rC05pS+6L+b566x5a2Q6YeM44CC")
+        [Convert]::FromBase64String("5oqK55+/5rOJ5rC05pS+6L+b57q4566x6YeM44CC")
     )
 }
 $project = "/home/nvidia/work/telop/One-Arm-Teleoperation"

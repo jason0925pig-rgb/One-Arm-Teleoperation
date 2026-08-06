@@ -50,7 +50,7 @@ cd /home/nvidia/work/telop/One-Arm-Teleoperation
 
 ```bash
 cd /home/nvidia/work/telop/One-Arm-Teleoperation
-export SMOLVLA_TASK='把那瓶水放进箱子里。'
+export SMOLVLA_TASK='把矿泉水放进纸箱里。'
 ./tools/start_smolvla_orin_ros_client.sh
 ```
 
