@@ -8,6 +8,8 @@ CLIENT_PID_FILE="${RUNTIME_DIR}/policy_client.pid"
 SERVER_LOG="${RUNTIME_DIR}/policy_server.log"
 CLIENT_LOG="${RUNTIME_DIR}/policy_client.log"
 STOPPING=0
+CLIENT_LOG_STREAM_PID=""
+SERVER_LOG_STREAM_PID=""
 
 mkdir -p "${RUNTIME_DIR}"
 # shellcheck disable=SC1091
@@ -63,6 +65,8 @@ cleanup() {
   "${PROJECT_ROOT}/tools/ubuntu_smolvla_stack.sh" stop || true
   stop_managed "${CLIENT_PID_FILE}"
   stop_managed "${SERVER_PID_FILE}"
+  [[ -z "${CLIENT_LOG_STREAM_PID}" ]] || kill "${CLIENT_LOG_STREAM_PID}" 2>/dev/null || true
+  [[ -z "${SERVER_LOG_STREAM_PID}" ]] || kill "${SERVER_LOG_STREAM_PID}" 2>/dev/null || true
   echo "SMOLVLA_ALL_STOPPED_AND_POWERED_OFF"
   if (( exit_code != 0 && exit_code != 130 )); then
     echo "--- policy client log (last 40 lines) ---" >&2
@@ -73,6 +77,24 @@ cleanup() {
   exit "${exit_code}"
 }
 trap cleanup EXIT INT TERM HUP
+
+start_visible_inference_logs() {
+  local client_pid server_pid
+  client_pid="$(<"${CLIENT_PID_FILE}")"
+  server_pid="$(<"${SERVER_PID_FILE}")"
+  (
+    tail --pid="${client_pid}" -n 8 -F "${CLIENT_LOG}" 2>/dev/null |
+      sed -u 's/^/[POLICY CLIENT] /'
+  ) &
+  CLIENT_LOG_STREAM_PID=$!
+  (
+    tail --pid="${server_pid}" -n 20 -F "${SERVER_LOG}" 2>/dev/null |
+      grep --line-buffered -E \
+        'Running inference|Preprocessing and inference|Action chunk|Total time|ERROR|WARNING' |
+      sed -u 's/^/[POLICY SERVER] /'
+  ) &
+  SERVER_LOG_STREAM_PID=$!
+}
 
 wait_for_server() {
   "${SMOLVLA_ORIN_VENV}/bin/python" - "${SMOLVLA_SERVER_HOST}" "${SMOLVLA_SERVER_PORT}" <<'PY'
@@ -144,6 +166,7 @@ alive_pid_file "${CLIENT_PID_FILE}" || {
   tail -n 100 "${CLIENT_LOG}" >&2 || true
   exit 1
 }
+start_visible_inference_logs
 
 python3 "${PROJECT_ROOT}/tools/wait_for_string_topic.py" /smolvla/status \
   --timeout 180 \
@@ -154,6 +177,21 @@ python3 "${PROJECT_ROOT}/tools/wait_for_string_topic.py" /smolvla/status \
     tail -n 100 "${CLIENT_LOG}" >&2 || true
     exit 1
   }
+echo "Waiting for the first complete 50-action policy chunk; no policy action is published yet..."
+python3 "${PROJECT_ROOT}/tools/wait_for_string_topic.py" /smolvla/status \
+  --timeout 180 \
+  --contains connected=1 \
+  --contains action_enabled=0 \
+  --contains observation_ready=1 \
+  --contains policy_chunk_ready=1 \
+  --contains action_queue_size=50 \
+  --contains expected_action_chunk_size=50 || {
+    echo "ERROR: the first complete 50-action policy chunk was not preloaded." >&2
+    tail -n 100 "${CLIENT_LOG}" >&2 || true
+    tail -n 100 "${SERVER_LOG}" >&2 || true
+    exit 1
+  }
+echo "FIRST_POLICY_CHUNK_READY_50_NO_MOTION"
 "${PROJECT_ROOT}/tools/ubuntu_smolvla_stack.sh" servo
 
 echo

@@ -67,6 +67,9 @@ class ArmstrongRos2(Robot):
         self._gripper_closed = False
         self._last_gripper_command: bool | None = None
         self._last_safe_joint_command: tuple[float, ...] | None = None
+        self._policy_queue_size = 0
+        self._policy_expected_chunk_size = 0
+        self._policy_chunk_ready = False
         self._owns_rclpy_context = False
         self._guard_config = PolicySafetyConfig(
             task_lower=tuple(config.task_lower),
@@ -102,6 +105,22 @@ class ArmstrongRos2(Robot):
     @property
     def is_calibrated(self) -> bool:
         return True
+
+    @property
+    def action_enabled(self) -> bool:
+        return self._action_enabled
+
+    def update_policy_queue_state(
+        self,
+        queue_size: int,
+        expected_chunk_size: int,
+        chunk_ready: bool,
+    ) -> None:
+        """Expose async-policy preload state through ``/smolvla/status``."""
+        with self._lock:
+            self._policy_queue_size = max(0, int(queue_size))
+            self._policy_expected_chunk_size = max(0, int(expected_chunk_size))
+            self._policy_chunk_ready = bool(chunk_ready)
 
     def calibrate(self) -> None:
         return None
@@ -350,6 +369,9 @@ class ArmstrongRos2(Robot):
             joint_age = now - self._joint_time if joint_present else -1.0
             chest_age = now - self._chest_time if chest_present else -1.0
             wrist_age = now - self._wrist_time if wrist_present else -1.0
+            policy_queue_size = self._policy_queue_size
+            policy_expected_chunk_size = self._policy_expected_chunk_size
+            policy_chunk_ready = self._policy_chunk_ready
         observation_ready = (
             joint_present
             and chest_present
@@ -363,6 +385,9 @@ class ArmstrongRos2(Robot):
             f"connected={int(self._connected)};"
             f"action_enabled={int(self._action_enabled)};"
             f"observation_ready={int(observation_ready)};"
+            f"policy_chunk_ready={int(policy_chunk_ready)};"
+            f"action_queue_size={policy_queue_size};"
+            f"expected_action_chunk_size={policy_expected_chunk_size};"
             f"joint_age_s={joint_age:.3f};"
             f"chest_age_s={chest_age:.3f};"
             f"wrist_age_s={wrist_age:.3f}"

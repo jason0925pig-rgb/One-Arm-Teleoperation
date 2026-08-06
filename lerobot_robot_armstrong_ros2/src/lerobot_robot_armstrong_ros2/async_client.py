@@ -25,6 +25,27 @@ class ArmstrongRobotClient(RobotClient):
     the normal upstream timestamp aggregation overlaps old and new chunks.
     """
 
+    def _sync_policy_queue_status(self) -> tuple[int, int, bool]:
+        with self.action_queue_lock:
+            queue_size = self.action_queue.qsize()
+        expected = max(1, int(self.config.actions_per_chunk))
+        ready = self.action_chunk_size >= expected and queue_size >= expected
+        self.robot.update_policy_queue_state(queue_size, expected, ready)
+        return queue_size, expected, ready
+
+    def actions_available(self):
+        available = super().actions_available()
+        self._sync_policy_queue_status()
+        return available
+
+    def _ready_to_send_observation(self):
+        # Before the operator enables policy motion, retain the complete first
+        # chunk instead of consuming or continuously replacing it.  This makes
+        # the MOVE prompt mean exactly "50 executable actions are preloaded".
+        if not self.robot.action_enabled and self.actions_available():
+            return False
+        return super()._ready_to_send_observation()
+
     def control_loop_observation(self, task: str, verbose: bool = False):
         try:
             if not self.running:
@@ -75,8 +96,13 @@ class ArmstrongRobotClient(RobotClient):
             return None
 
     def control_loop_action(self, verbose: bool = False):
+        if not self.robot.action_enabled:
+            self._sync_policy_queue_status()
+            return None
         try:
-            return super().control_loop_action(verbose)
+            result = super().control_loop_action(verbose)
+            self._sync_policy_queue_status()
+            return result
         except Exception as exc:
             # A short feedback pause must not tear down the whole client. The
             # failed action was already removed from the queue; later actions
@@ -84,6 +110,29 @@ class ArmstrongRobotClient(RobotClient):
             # target continues to be refreshed by control_loop_observation.
             self.logger.error("Error in Armstrong action sender: %s", exc)
             return None
+
+    def log_runtime_status(self) -> None:
+        last_signature = None
+        last_log_time = 0.0
+        while self.running:
+            queue_size, expected, ready = self._sync_policy_queue_status()
+            with self.latest_action_lock:
+                latest_action = self.latest_action
+            mode = "RUNNING" if self.robot.action_enabled else "PRELOAD"
+            signature = (mode, ready, queue_size // 10, latest_action // 10)
+            now = time.monotonic()
+            if signature != last_signature or now - last_log_time >= 5.0:
+                self.logger.info(
+                    "POLICY_RUNTIME mode=%s first_chunk_ready=%s queue=%s/%s latest_action=%s",
+                    mode,
+                    int(ready),
+                    queue_size,
+                    expected,
+                    latest_action,
+                )
+                last_signature = signature
+                last_log_time = now
+            self.shutdown_event.wait(0.25)
 
 
 @draccus.wrap()
@@ -100,12 +149,15 @@ def main(cfg: RobotClientConfig) -> None:
     if not client.start():
         raise SystemExit(2)
     action_receiver = threading.Thread(target=client.receive_actions, daemon=True)
+    runtime_logger = threading.Thread(target=client.log_runtime_status, daemon=True)
     action_receiver.start()
+    runtime_logger.start()
     try:
         client.control_loop(task=cfg.task)
     finally:
         client.shutdown_event.set()
         action_receiver.join(timeout=5.0)
+        runtime_logger.join(timeout=2.0)
         client.stop()
         action_receiver.join(timeout=2.0)
         if cfg.debug_visualize_queue_size:

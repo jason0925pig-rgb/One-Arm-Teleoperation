@@ -959,8 +959,31 @@ private:
             result = robot_.edg_send();
         }
 #endif
+        last_servo_command_error_ = result;
         if (result != ERR_SUCC) {
-            disarm_locked("JAKA absolute servo command returned an error");
+            RCLCPP_ERROR(
+                get_logger(),
+                "JAKA servo_j failed: sdk_return_code=%d robot_error_code=%d "
+                "powered_on=%d enabled=%d emergency_stop=%d protective_stop=%d "
+                "socket_connected=%d command=[%.6f, %.6f, %.6f, %.6f, %.6f, %.6f, %.6f] "
+                "actual=[%.6f, %.6f, %.6f, %.6f, %.6f, %.6f, %.6f]",
+                result,
+                robot_error_code_,
+                robot_powered_on_,
+                robot_enabled_,
+                robot_emergency_stop_,
+                robot_protective_stop_,
+                robot_socket_connected_,
+                current_command_[0], current_command_[1], current_command_[2],
+                current_command_[3], current_command_[4], current_command_[5],
+                current_command_[6],
+                latest_actual_[0], latest_actual_[1], latest_actual_[2],
+                latest_actual_[3], latest_actual_[4], latest_actual_[5],
+                latest_actual_[6]);
+            disarm_locked(
+                "JAKA absolute servo command failed; sdk_return_code=" +
+                std::to_string(result) + "; robot_error_code=" +
+                std::to_string(robot_error_code_));
             return;
         }
 
@@ -1197,6 +1220,7 @@ private:
              << ";limits_configured=" << safety_configuration_valid_
              << ";motion_enabled=" << motion_enabled_
              << ";servo_mode_entered=" << servo_mode_entered_
+             << ";last_servo_command_error=" << last_servo_command_error_
              << ";last_servo_disable_error=" << last_servo_disable_error_
              << ";has_target=" << has_target_
              << ";control_tick_count=" << control_tick_count_
@@ -1245,6 +1269,7 @@ private:
     bool has_target_{false};
     int robot_error_code_{0};
     int robot_drag_status_{0};
+    int last_servo_command_error_{0};
     int last_servo_disable_error_{0};
     double command_timeout_seconds_{0.30};
     double feedback_timeout_seconds_{0.30};
