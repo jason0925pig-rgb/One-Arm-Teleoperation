@@ -98,13 +98,17 @@ def main() -> int:
     )
     parser.add_argument("--duration", type=float, default=6.0)
     parser.add_argument("--warmup", type=float, default=1.0)
+    parser.add_argument("--first-frame-timeout", type=float, default=20.0)
     parser.add_argument("--minimum-fps", type=float, default=27.0)
     parser.add_argument("--maximum-fps", type=float, default=33.0)
     parser.add_argument("--maximum-gap-ms", type=float, default=100.0)
     parser.add_argument("--topic", action="append", dest="topics")
     args = parser.parse_args()
-    if args.duration <= 0 or args.warmup < 0:
-        raise SystemExit("duration must be positive and warmup nonnegative")
+    if args.duration <= 0 or args.warmup < 0 or args.first_frame_timeout <= 0:
+        raise SystemExit(
+            "duration and first-frame-timeout must be positive; "
+            "warmup must be nonnegative"
+        )
     topics = tuple(args.topics or DEFAULT_TOPICS)
     if len(topics) != 2 or len(set(topics)) != 2:
         raise SystemExit("exactly two different camera topics are required")
@@ -112,6 +116,27 @@ def main() -> int:
     rclpy.init()
     node = CameraRateProbe(topics)
     try:
+        # Orbbec devices can need several seconds to load presets and start
+        # their USB streams.  Do not spend the fixed measurement window while
+        # one camera is still initializing.
+        first_frame_deadline = time.monotonic() + args.first_frame_timeout
+        while (
+            not all(samples.header_ns for samples in node.samples.values())
+            and time.monotonic() < first_frame_deadline
+        ):
+            rclpy.spin_once(node, timeout_sec=0.1)
+        missing_topics = [
+            topic
+            for topic, samples in node.samples.items()
+            if not samples.header_ns
+        ]
+        if missing_topics:
+            print(
+                "CAMERA_FIRST_FRAME_TIMEOUT missing="
+                + ",".join(missing_topics)
+            )
+            return 4
+
         warmup_deadline = time.monotonic() + args.warmup
         while time.monotonic() < warmup_deadline:
             rclpy.spin_once(node, timeout_sec=0.1)
