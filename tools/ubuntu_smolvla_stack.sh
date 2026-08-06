@@ -90,7 +90,20 @@ call_bool() {
   grep -Eq 'success[=:][[:space:]]*(true|True)' <<<"${output}"
 }
 
-try_bool() { call_bool "$1" "$2" || true; }
+service_available() {
+  local service="$1" services
+  services="$(timeout 3 ros2 service list --no-daemon --spin-time 0.5 2>/dev/null)" || return 1
+  grep -Fxq "${service}" <<<"${services}"
+}
+
+try_bool() {
+  local service="$1" value="$2"
+  if ! service_available "${service}"; then
+    echo "service not running; skipping: ${service}"
+    return 0
+  fi
+  call_bool "${service}" "${value}" || true
+}
 
 wait_status() {
   local timeout_seconds="$1"

@@ -60,7 +60,6 @@ cleanup() {
   trap - EXIT INT TERM HUP
   echo
   echo "Stopping policy motion, servo mode, gripper, robot enable and power..."
-  "${PROJECT_ROOT}/tools/ubuntu_smolvla_stack.sh" disable-policy || true
   "${PROJECT_ROOT}/tools/ubuntu_smolvla_stack.sh" stop || true
   stop_managed "${CLIENT_PID_FILE}"
   stop_managed "${SERVER_PID_FILE}"
