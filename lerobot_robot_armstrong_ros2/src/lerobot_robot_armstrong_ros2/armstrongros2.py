@@ -309,8 +309,31 @@ class ArmstrongRos2(Robot):
     def _publish_status(self) -> None:
         if self._node is None:
             return
+        now = time.monotonic()
+        with self._lock:
+            joint_present = self._joint_state is not None
+            chest_present = self._chest is not None
+            wrist_present = self._wrist is not None
+            joint_age = now - self._joint_time if joint_present else -1.0
+            chest_age = now - self._chest_time if chest_present else -1.0
+            wrist_age = now - self._wrist_time if wrist_present else -1.0
+        observation_ready = (
+            joint_present
+            and chest_present
+            and wrist_present
+            and joint_age <= self.config.state_timeout_seconds
+            and chest_age <= self.config.camera_timeout_seconds
+            and wrist_age <= self.config.camera_timeout_seconds
+        )
         message = String()
-        message.data = f"connected={int(self._connected)};action_enabled={int(self._action_enabled)}"
+        message.data = (
+            f"connected={int(self._connected)};"
+            f"action_enabled={int(self._action_enabled)};"
+            f"observation_ready={int(observation_ready)};"
+            f"joint_age_s={joint_age:.3f};"
+            f"chest_age_s={chest_age:.3f};"
+            f"wrist_age_s={wrist_age:.3f}"
+        )
         self._status_pub.publish(message)
 
     def disconnect(self) -> None:

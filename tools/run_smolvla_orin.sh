@@ -1,0 +1,175 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+RUNTIME_DIR="/tmp/one_arm_smolvla_${UID}"
+SERVER_PID_FILE="${RUNTIME_DIR}/policy_server.pid"
+CLIENT_PID_FILE="${RUNTIME_DIR}/policy_client.pid"
+SERVER_LOG="${RUNTIME_DIR}/policy_server.log"
+CLIENT_LOG="${RUNTIME_DIR}/policy_client.log"
+STOPPING=0
+
+mkdir -p "${RUNTIME_DIR}"
+# shellcheck disable=SC1091
+source "${PROJECT_ROOT}/tools/smolvla_orin_env.sh"
+if [[ -n "${SMOLVLA_TASK_B64:-}" ]]; then
+  export SMOLVLA_TASK="$(printf '%s' "${SMOLVLA_TASK_B64}" | base64 --decode)"
+fi
+export SMOLVLA_TASK="${SMOLVLA_TASK:-把那瓶水放进箱子里。}"
+
+set +u
+# shellcheck disable=SC1091
+source "/opt/ros/${ROS_DISTRO:-humble}/setup.bash"
+# shellcheck disable=SC1091
+source "${PROJECT_ROOT}/install/setup.bash"
+set -u
+
+alive_pid_file() {
+  local file="$1" pid
+  [[ -s "${file}" ]] || return 1
+  pid="$(<"${file}")"
+  [[ "${pid}" =~ ^[0-9]+$ ]] && kill -0 "${pid}" 2>/dev/null
+}
+
+start_managed() {
+  local pid_file="$1" log_file="$2"
+  shift 2
+  nohup setsid "$@" >"${log_file}" 2>&1 < /dev/null &
+  printf '%s\n' "$!" >"${pid_file}"
+}
+
+stop_managed() {
+  local pid_file="$1" pid deadline
+  [[ -s "${pid_file}" ]] || return 0
+  pid="$(<"${pid_file}")"
+  if [[ "${pid}" =~ ^[0-9]+$ ]] && kill -0 "${pid}" 2>/dev/null; then
+    kill -INT -- "-${pid}" 2>/dev/null || kill -INT "${pid}" 2>/dev/null || true
+    deadline=$((SECONDS + 8))
+    while kill -0 "${pid}" 2>/dev/null && (( SECONDS < deadline )); do sleep 0.1; done
+    if kill -0 "${pid}" 2>/dev/null; then
+      kill -TERM -- "-${pid}" 2>/dev/null || kill -TERM "${pid}" 2>/dev/null || true
+    fi
+  fi
+  rm -f -- "${pid_file}"
+}
+
+cleanup() {
+  local exit_code=$?
+  (( STOPPING == 0 )) || return
+  STOPPING=1
+  trap - EXIT INT TERM HUP
+  echo
+  echo "Stopping policy motion, servo mode, gripper, robot enable and power..."
+  "${PROJECT_ROOT}/tools/ubuntu_smolvla_stack.sh" disable-policy || true
+  "${PROJECT_ROOT}/tools/ubuntu_smolvla_stack.sh" stop || true
+  stop_managed "${CLIENT_PID_FILE}"
+  stop_managed "${SERVER_PID_FILE}"
+  echo "SMOLVLA_ALL_STOPPED_AND_POWERED_OFF"
+  if (( exit_code != 0 && exit_code != 130 )); then
+    echo "--- policy client log (last 40 lines) ---" >&2
+    tail -n 40 "${CLIENT_LOG}" >&2 2>/dev/null || true
+    echo "--- arm log (last 40 lines) ---" >&2
+    tail -n 40 "${RUNTIME_DIR}/arm.log" >&2 2>/dev/null || true
+  fi
+  exit "${exit_code}"
+}
+trap cleanup EXIT INT TERM HUP
+
+wait_for_server() {
+  "${SMOLVLA_ORIN_VENV}/bin/python" - "${SMOLVLA_SERVER_HOST}" "${SMOLVLA_SERVER_PORT}" <<'PY'
+import socket
+import sys
+import time
+
+host, port = sys.argv[1], int(sys.argv[2])
+deadline = time.monotonic() + 30.0
+while time.monotonic() < deadline:
+    try:
+        with socket.create_connection((host, port), timeout=0.5):
+            raise SystemExit(0)
+    except OSError:
+        time.sleep(0.25)
+raise SystemExit("policy server did not open its loopback port within 30 seconds")
+PY
+}
+
+wait_for_fresh_joint_stream() {
+  timeout 15 ros2 topic echo --once /right_arm/joint_states >/dev/null
+  sleep 0.5
+  timeout 15 ros2 topic echo --once /right_arm/joint_states >/dev/null
+}
+
+if alive_pid_file "${SERVER_PID_FILE}" || alive_pid_file "${CLIENT_PID_FILE}"; then
+  echo "ERROR: the one-window SmolVLA launcher is already running." >&2
+  exit 3
+fi
+
+echo "============================================================"
+echo "SmolVLA / Armstrong single-window launcher"
+echo "Task: ${SMOLVLA_TASK}"
+echo "Stage 1 starts inference, cameras and observation interfaces only."
+echo "The robot will NOT power on, enable or move in this stage."
+echo "============================================================"
+
+start_managed "${SERVER_PID_FILE}" "${SERVER_LOG}" \
+  "${PROJECT_ROOT}/tools/start_smolvla_orin_policy_server.sh"
+sleep 1
+alive_pid_file "${SERVER_PID_FILE}" || {
+  echo "ERROR: policy server exited during startup." >&2
+  tail -n 80 "${SERVER_LOG}" >&2 || true
+  exit 1
+}
+wait_for_server
+"${PROJECT_ROOT}/tools/ubuntu_smolvla_stack.sh" start
+
+echo
+echo "OBSERVATION_STACK_READY_NO_MOTION"
+echo "下一步会给右臂上电、使能并打开夹爪；机械臂可能轻微落位。"
+echo "确认现场无人、无障碍物、实体急停触手可及后，输入 ARM 并回车。"
+echo "输入其他内容或按 Ctrl+C 会安全退出并保持机器人下电。"
+read -r -p "Type ARM to continue: " answer
+[[ "${answer}" == "ARM" ]] || exit 0
+
+"${PROJECT_ROOT}/tools/ubuntu_smolvla_stack.sh" prepare
+wait_for_fresh_joint_stream
+echo "JOINT_STREAM_RECOVERED_AFTER_POWER_ENABLE"
+
+# Starting the observation client only after the blocking power/enable SDK
+# calls prevents their expected multi-second pause from being reported as a
+# stale joint-state failure.
+start_managed "${CLIENT_PID_FILE}" "${CLIENT_LOG}" \
+  "${PROJECT_ROOT}/tools/start_smolvla_orin_ros_client.sh"
+sleep 2
+alive_pid_file "${CLIENT_PID_FILE}" || {
+  echo "ERROR: policy client exited during startup." >&2
+  tail -n 100 "${CLIENT_LOG}" >&2 || true
+  exit 1
+}
+
+python3 "${PROJECT_ROOT}/tools/wait_for_string_topic.py" /smolvla/status \
+  --timeout 180 \
+  --contains connected=1 \
+  --contains action_enabled=0 \
+  --contains observation_ready=1 || {
+    echo "ERROR: the policy client never reached a fresh observation state." >&2
+    tail -n 100 "${CLIENT_LOG}" >&2 || true
+    exit 1
+  }
+"${PROJECT_ROOT}/tools/ubuntu_smolvla_stack.sh" servo
+
+echo
+echo "SMOLVLA_READY_NO_POLICY_MOTION"
+echo "模型、两路相机、七轴反馈和夹爪已就绪，但模型动作门仍关闭。"
+echo "下一步输入 MOVE 后机器人将按模型输出运动。"
+echo "确认初始场景正确且实体急停触手可及，再输入 MOVE 并回车。"
+read -r -p "Type MOVE to start model control: " answer
+[[ "${answer}" == "MOVE" ]] || exit 0
+
+"${PROJECT_ROOT}/tools/ubuntu_smolvla_stack.sh" enable-policy
+echo
+echo "SMOLVLA_RUNNING"
+echo "机器人正在由模型控制。按 Ctrl+C，或输入 STOP 并回车，即刻执行有序停止、去使能和下电。"
+while read -r answer; do
+  [[ "${answer}" == "STOP" ]] && break
+  echo "Type STOP then Enter, or press Ctrl+C, to stop."
+done

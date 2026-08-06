@@ -1,5 +1,9 @@
 # SmolVLA 在公司 Jetson AGX Orin 上的四终端运行方法
 
+> 本文保留用于逐进程调试。现场正常运行请改用单窗口入口
+> `tools/start_smolvla_orin.cmd`；它会按正确顺序启动、等待状态恢复，并在
+> `Ctrl+C` 后自动退出伺服、去使能和下电。不要同时使用两套启动方式。
+
 这份流程固定用于 `nvidia@192.168.2.170`（Jetson AGX Orin、Ubuntu 22.04、ROS 2 Humble）。模型服务、ROS 客户端和机器人接口全部在 Orin 本机运行；策略通信地址是 `127.0.0.1:8080`，不经过 Windows、Wi-Fi 或 A800。
 
 ## 运行前检查

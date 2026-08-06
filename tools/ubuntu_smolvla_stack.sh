@@ -177,22 +177,32 @@ start_stack() {
   echo "No power, robot enable, servo mode or policy action has been requested."
 }
 
-arm_stack() {
-  wait_service /smolvla/set_enabled 10
-  [[ "$(publisher_count /right_arm/teleop_joint_command)" == "1" ]] || {
-    echo "ERROR: expected exactly one SmolVLA joint publisher." >&2; exit 1;
-  }
+prepare_stack() {
   echo "WARNING: this command powers/enables the right arm and opens the gripper."
-  echo "The arm servo gate gets no target until enable-policy is called."
+  echo "It does not enter servo mode and no policy action can reach the arm."
   call_bool /right_arm/set_powered_on true
   wait_status 20 robot_powered_on=1 robot_error_code=0 robot_emergency_stop=0 robot_protective_stop=0
   call_bool /right_arm/set_robot_enabled true
   wait_status 20 robot_enabled=1 robot_error_code=0 robot_emergency_stop=0 robot_protective_stop=0
   call_bool /right_arm/set_gripper_enabled true
   call_bool /right_arm/set_gripper_open true
+  echo "SMOLVLA_ROBOT_PREPARED_NO_SERVO"
+}
+
+enter_servo() {
+  wait_service /smolvla/set_enabled 20
+  [[ "$(publisher_count /right_arm/teleop_joint_command)" == "1" ]] || {
+    echo "ERROR: expected exactly one SmolVLA joint publisher." >&2; exit 1;
+  }
+  wait_status 10 robot_powered_on=1 robot_enabled=1 robot_error_code=0 robot_emergency_stop=0 robot_protective_stop=0
   call_bool /right_arm/set_motion_enabled true
   wait_status 15 motion_enabled=1 robot_error_code=0 robot_emergency_stop=0 robot_protective_stop=0
   echo "SMOLVLA_ARMED_NO_POLICY_ACTION"
+}
+
+arm_stack() {
+  prepare_stack
+  enter_servo
 }
 
 enable_policy() {
@@ -234,10 +244,12 @@ status_stack() {
 
 case "${ACTION}" in
   start) start_stack ;;
+  prepare) prepare_stack ;;
+  servo) enter_servo ;;
   arm) arm_stack ;;
   enable-policy) enable_policy ;;
   disable-policy) disable_policy ;;
   stop) stop_stack ;;
   status) status_stack ;;
-  *) echo "Usage: $0 {start|arm|enable-policy|disable-policy|stop|status}" >&2; exit 2 ;;
+  *) echo "Usage: $0 {start|prepare|servo|arm|enable-policy|disable-policy|stop|status}" >&2; exit 2 ;;
 esac
