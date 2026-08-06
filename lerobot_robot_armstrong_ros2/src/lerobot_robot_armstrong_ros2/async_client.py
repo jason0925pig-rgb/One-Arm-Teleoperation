@@ -1,7 +1,5 @@
 """Armstrong-specific LeRobot async client with overlapping action chunks."""
 
-from __future__ import annotations
-
 import logging
 import threading
 import time
