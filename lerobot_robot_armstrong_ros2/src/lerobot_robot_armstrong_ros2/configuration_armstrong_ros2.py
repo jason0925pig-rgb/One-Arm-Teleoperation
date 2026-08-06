@@ -63,7 +63,7 @@ class ArmstrongRos2Config(RobotConfig):
         0.011368,
         4.918667,
     )
-    max_target_error_rad: float = 0.25
+    max_target_error_rad: float = 0.50
     small_envelope_overshoot_rad: float = 0.03
     gripper_open_threshold: float = 0.35
     gripper_close_threshold: float = 0.65
