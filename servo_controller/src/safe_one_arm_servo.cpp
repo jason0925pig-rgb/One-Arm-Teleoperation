@@ -52,6 +52,7 @@ public:
         stop_on_feedback_timeout_ =
             declare_parameter<bool>("stop_on_feedback_timeout", true);
         control_rate_hz_ = declare_parameter<double>("control_rate_hz", 125.0);
+        servo_step_num_ = declare_parameter<int>("servo_step_num", 1);
         state_rate_hz_ = declare_parameter<double>("state_rate_hz", 20.0);
         control_deadline_warning_factor_ =
             declare_parameter<double>("control_deadline_warning_factor", 1.5);
@@ -168,12 +169,14 @@ public:
         RCLCPP_WARN(
             get_logger(),
             "Safe one-arm node started: arm=%s dry_run=%d connected=%d "
-            "control_period_us=%lld. "
+            "control_period_us=%lld servo_step_num=%d sdk_servo_period_ms=%.1f. "
             "It does not power, enable, or enter servo mode at startup.",
             arm_name_.c_str(),
             dry_run_,
             connected_,
-            static_cast<long long>(control_period.count()));
+            static_cast<long long>(control_period.count()),
+            servo_step_num_,
+            static_cast<double>(servo_step_num_) * 8.0);
         if (power_on_on_arm_) {
             RCLCPP_ERROR(
                 get_logger(),
@@ -226,6 +229,11 @@ private:
             return false;
         }
         if (
+            !std::isfinite(control_rate_hz_) || control_rate_hz_ <= 0.0 ||
+            servo_step_num_ <= 0 ||
+            std::abs(
+                1.0 / control_rate_hz_ -
+                static_cast<double>(servo_step_num_) * 0.008) > 0.001 ||
             !std::isfinite(control_deadline_warning_factor_) ||
             control_deadline_warning_factor_ <= 1.0 ||
             !std::isfinite(control_deadline_abort_seconds_) ||
@@ -952,9 +960,16 @@ private:
         }
         errno_t result = ERR_SUCC;
 #if defined(ARCH_ARM64)
-        result = robot_.servo_j(&command, MoveMode::ABS, 1);
+        result = robot_.servo_j(
+            &command,
+            MoveMode::ABS,
+            static_cast<unsigned int>(servo_step_num_));
 #else
-        result = robot_.edg_servo_j(0, &command, MoveMode::ABS, 1);
+        result = robot_.edg_servo_j(
+            0,
+            &command,
+            MoveMode::ABS,
+            static_cast<unsigned int>(servo_step_num_));
         if (result == ERR_SUCC) {
             result = robot_.edg_send();
         }
@@ -963,11 +978,14 @@ private:
         if (result != ERR_SUCC) {
             RCLCPP_ERROR(
                 get_logger(),
-                "JAKA servo_j failed: sdk_return_code=%d robot_error_code=%d "
+                "JAKA servo_j failed: sdk_return_code=%d servo_step_num=%d "
+                "sdk_servo_period_ms=%.1f robot_error_code=%d "
                 "powered_on=%d enabled=%d emergency_stop=%d protective_stop=%d "
                 "socket_connected=%d command=[%.6f, %.6f, %.6f, %.6f, %.6f, %.6f, %.6f] "
                 "actual=[%.6f, %.6f, %.6f, %.6f, %.6f, %.6f, %.6f]",
                 result,
+                servo_step_num_,
+                static_cast<double>(servo_step_num_) * 8.0,
                 robot_error_code_,
                 robot_powered_on_,
                 robot_enabled_,
@@ -1231,6 +1249,10 @@ private:
              << ";stop_on_feedback_timeout=" << stop_on_feedback_timeout_
              << ";stop_on_control_deadline_abort="
              << stop_on_control_deadline_abort_
+             << ";control_rate_hz=" << control_rate_hz_
+             << ";servo_step_num=" << servo_step_num_
+             << ";sdk_servo_period_s="
+             << static_cast<double>(servo_step_num_) * 0.008
              << ";last_control_period_s=" << last_control_period_seconds_
              << ";max_control_period_s=" << max_control_period_seconds_;
         status.data = stream.str();
@@ -1276,6 +1298,7 @@ private:
     bool stop_on_command_timeout_{true};
     bool stop_on_feedback_timeout_{true};
     double control_rate_hz_{125.0};
+    int servo_step_num_{1};
     double state_rate_hz_{20.0};
     double control_deadline_warning_factor_{1.5};
     double control_deadline_abort_seconds_{0.05};
