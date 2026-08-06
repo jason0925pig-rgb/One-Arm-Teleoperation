@@ -8,6 +8,7 @@ CLIENT_PID_FILE="${RUNTIME_DIR}/policy_client.pid"
 SERVER_LOG="${RUNTIME_DIR}/policy_server.log"
 CLIENT_LOG="${RUNTIME_DIR}/policy_client.log"
 STOPPING=0
+STOP_SOURCE="normal_exit"
 CLIENT_LOG_STREAM_PID=""
 SERVER_LOG_STREAM_PID=""
 
@@ -61,6 +62,8 @@ cleanup() {
   STOPPING=1
   trap - EXIT INT TERM HUP
   echo
+  printf 'TELEMETRY_EVENT event=launcher_cleanup source=%s wall_time=%s\n' \
+    "${STOP_SOURCE}" "$(date --iso-8601=ns)"
   echo "Stopping policy motion, servo mode, gripper, robot enable and power..."
   "${PROJECT_ROOT}/tools/ubuntu_smolvla_stack.sh" stop || true
   stop_managed "${CLIENT_PID_FILE}"
@@ -76,7 +79,19 @@ cleanup() {
   fi
   exit "${exit_code}"
 }
-trap cleanup EXIT INT TERM HUP
+
+handle_signal() {
+  local signal_name="$1" exit_code="$2"
+  STOP_SOURCE="signal_${signal_name}"
+  printf 'TELEMETRY_EVENT event=operator_interrupt source=%s wall_time=%s\n' \
+    "${STOP_SOURCE}" "$(date --iso-8601=ns)"
+  exit "${exit_code}"
+}
+
+trap cleanup EXIT
+trap 'handle_signal INT 130' INT
+trap 'handle_signal TERM 143' TERM
+trap 'handle_signal HUP 129' HUP
 
 start_visible_inference_logs() {
   local client_pid server_pid
@@ -249,6 +264,11 @@ echo
 echo "SMOLVLA_RUNNING"
 echo "机器人正在由模型控制。按 Ctrl+C，或输入 STOP 并回车，即刻执行有序停止、去使能和下电。"
 while read -r answer; do
-  [[ "${answer}" == "STOP" ]] && break
+  if [[ "${answer}" == "STOP" ]]; then
+    STOP_SOURCE="operator_typed_stop"
+    printf 'TELEMETRY_EVENT event=operator_stop source=typed_STOP wall_time=%s\n' \
+      "$(date --iso-8601=ns)"
+    break
+  fi
   echo "Type STOP then Enter, or press Ctrl+C, to stop."
 done

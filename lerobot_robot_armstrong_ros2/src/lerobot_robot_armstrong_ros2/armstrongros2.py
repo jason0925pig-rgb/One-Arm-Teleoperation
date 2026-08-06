@@ -67,6 +67,9 @@ class ArmstrongRos2(Robot):
         self._wrist_time = 0.0
         self._gripper_closed = False
         self._last_gripper_command: bool | None = None
+        self._model_gripper_command_count = 0
+        self._model_gripper_open_count = 0
+        self._model_gripper_close_count = 0
         self._last_safe_joint_command: tuple[float, ...] | None = None
         self._policy_queue_size = 0
         self._policy_expected_chunk_size = 0
@@ -232,8 +235,9 @@ class ArmstrongRos2(Robot):
         if publish_stop:
             if self._node is not None:
                 self._node.get_logger().error(
-                    "Arm servo gate closed during policy control; "
-                    "policy and gripper stopped together"
+                    "TELEMETRY_EVENT event=policy_stop "
+                    "source=arm_motion_gate_closed; policy and gripper "
+                    "stopped together"
                 )
             self._publish_stop()
 
@@ -294,6 +298,11 @@ class ArmstrongRos2(Robot):
             self._last_safe_joint_command = None
             self._last_gripper_command = None
             self._publish_stop()
+            if self._node is not None:
+                self._node.get_logger().error(
+                    "TELEMETRY_EVENT event=policy_stop "
+                    "source=set_enabled_false"
+                )
             response.success = True
             response.message = "SmolVLA action gate disabled and STOP published"
             return response
@@ -340,11 +349,17 @@ class ArmstrongRos2(Robot):
                 gripper_closed,
                 self._guard_config,
             )
-        except PolicySafetyError:
+        except PolicySafetyError as exc:
             self._action_enabled = False
             self._last_safe_joint_command = None
             self._last_gripper_command = None
             self._publish_stop()
+            if self._node is not None:
+                self._node.get_logger().error(
+                    "TELEMETRY_EVENT event=model_safety_guard "
+                    f'reason="{exc}" raw_gripper={predicted[-1]:.6f} '
+                    f"actual_joints={joints} predicted_joints={predicted[:7]}"
+                )
             raise
 
         self._last_safe_joint_command = tuple(guarded_joints)
@@ -356,6 +371,21 @@ class ArmstrongRos2(Robot):
             gripper_message.data = lerobot_closed_to_ros_requested_open(guarded_gripper)
             self._gripper_pub.publish(gripper_message)
             self._last_gripper_command = guarded_gripper
+            self._model_gripper_command_count += 1
+            if guarded_gripper:
+                self._model_gripper_close_count += 1
+            else:
+                self._model_gripper_open_count += 1
+            if self._node is not None:
+                self._node.get_logger().warn(
+                    "TELEMETRY_EVENT event=model_gripper_transition "
+                    f"sequence={self._model_gripper_command_count} "
+                    f"action={'close' if guarded_gripper else 'open'} "
+                    f"raw_model={predicted[-1]:.6f} "
+                    f"opens={self._model_gripper_open_count} "
+                    f"closes={self._model_gripper_close_count} "
+                    f"actual_joints={joints} guarded_joints={guarded_joints}"
+                )
         return {
             **dict(zip(JOINT_NAMES, guarded_joints, strict=True)),
             GRIPPER_NAME: float(guarded_gripper),

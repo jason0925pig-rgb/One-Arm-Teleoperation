@@ -755,6 +755,9 @@ private:
         servo_mode_entered_ = true;
         motion_enabled_ = true;
         has_target_ = false;
+        servo_command_attempt_count_ = 0;
+        servo_command_success_count_ = 0;
+        servo_motion_started_ = std::chrono::steady_clock::now();
         consecutive_control_deadline_aborts_ = 0;
         last_control_tick_ = std::chrono::steady_clock::now();
         response->success = true;
@@ -791,6 +794,9 @@ private:
             return;
         }
         std::lock_guard<std::mutex> lock(mutex_);
+        RCLCPP_ERROR(
+            get_logger(),
+            "TELEMETRY_EVENT event=software_stop source=teleop_stop_topic");
         disarm_locked("teleop STOP request");
     }
 
@@ -959,6 +965,7 @@ private:
             return;
         }
         errno_t result = ERR_SUCC;
+        ++servo_command_attempt_count_;
 #if defined(ARCH_ARM64)
         result = robot_.servo_j(
             &command,
@@ -976,6 +983,21 @@ private:
 #endif
         last_servo_command_error_ = result;
         if (result != ERR_SUCC) {
+            const double servo_runtime_seconds =
+                servo_motion_started_.time_since_epoch().count() == 0
+                    ? 0.0
+                    : std::chrono::duration<double>(
+                          now - servo_motion_started_).count();
+            RCLCPP_ERROR(
+                get_logger(),
+                "TELEMETRY_EVENT event=sdk_servo_failure api=servo_j "
+                "sdk_return_code=%d attempt=%llu successes=%llu "
+                "servo_runtime_s=%.6f control_period_s=%.6f",
+                result,
+                static_cast<unsigned long long>(servo_command_attempt_count_),
+                static_cast<unsigned long long>(servo_command_success_count_),
+                servo_runtime_seconds,
+                callback_period);
             RCLCPP_ERROR(
                 get_logger(),
                 "JAKA servo_j failed: sdk_return_code=%d servo_step_num=%d "
@@ -1004,6 +1026,7 @@ private:
                 std::to_string(robot_error_code_));
             return;
         }
+        ++servo_command_success_count_;
 
         // Publish the exact post-slew-limit joint target accepted by the SDK.
         // The upstream teleop_joint_command is only the desired target and can
@@ -1071,6 +1094,11 @@ private:
             }
         }
 
+        const bool previous_emergency_stop = robot_emergency_stop_;
+        const bool previous_protective_stop = robot_protective_stop_;
+        const bool previous_socket_connected = robot_socket_connected_;
+        const int previous_error_code = robot_error_code_;
+
         latest_actual_ = actual;
         last_feedback_received_ = std::chrono::steady_clock::now();
         feedback_valid_ = true;
@@ -1082,6 +1110,45 @@ private:
         robot_socket_connected_ = robot_status.is_socket_connect != 0;
         robot_error_code_ = robot_status.errcode;
         robot_drag_status_ = robot_status.drag_status;
+
+        if (!robot_status_initialized_) {
+            RCLCPP_WARN(
+                get_logger(),
+                "TELEMETRY_EVENT event=robot_status_baseline "
+                "emergency_stop=%d protective_stop=%d socket_connected=%d "
+                "robot_error_code=%d",
+                robot_emergency_stop_,
+                robot_protective_stop_,
+                robot_socket_connected_,
+                robot_error_code_);
+            robot_status_initialized_ = true;
+        } else {
+            if (robot_emergency_stop_ != previous_emergency_stop) {
+                RCLCPP_ERROR(
+                    get_logger(),
+                    "TELEMETRY_EVENT event=physical_estop state=%s",
+                    robot_emergency_stop_ ? "pressed" : "released");
+            }
+            if (robot_protective_stop_ != previous_protective_stop) {
+                RCLCPP_ERROR(
+                    get_logger(),
+                    "TELEMETRY_EVENT event=protective_stop state=%s",
+                    robot_protective_stop_ ? "active" : "cleared");
+            }
+            if (robot_socket_connected_ != previous_socket_connected) {
+                RCLCPP_ERROR(
+                    get_logger(),
+                    "TELEMETRY_EVENT event=controller_socket state=%s",
+                    robot_socket_connected_ ? "connected" : "disconnected");
+            }
+            if (robot_error_code_ != previous_error_code) {
+                RCLCPP_ERROR(
+                    get_logger(),
+                    "TELEMETRY_EVENT event=robot_error_transition old=%d new=%d",
+                    previous_error_code,
+                    robot_error_code_);
+            }
+        }
 
         if (!robot_socket_connected_) {
             feedback_valid_ = false;
@@ -1174,6 +1241,15 @@ private:
     }
 
     void disarm_locked(const std::string &reason) {
+        if (motion_enabled_ || servo_mode_entered_) {
+            RCLCPP_ERROR(
+                get_logger(),
+                "TELEMETRY_EVENT event=arm_disarm reason=\"%s\" "
+                "servo_attempts=%llu servo_successes=%llu",
+                reason.c_str(),
+                static_cast<unsigned long long>(servo_command_attempt_count_),
+                static_cast<unsigned long long>(servo_command_success_count_));
+        }
         if (servo_mode_entered_ && connected_) {
             const errno_t servo_result = robot_.servo_move_enable(FALSE);
             if (servo_result == ERR_SUCC) {
@@ -1285,6 +1361,7 @@ private:
     bool robot_protective_stop_{false};
     bool robot_on_soft_limit_{false};
     bool robot_socket_connected_{false};
+    bool robot_status_initialized_{false};
     bool motion_enabled_{false};
     bool servo_mode_entered_{false};
     bool drag_mode_requested_{false};
@@ -1292,6 +1369,9 @@ private:
     int robot_error_code_{0};
     int robot_drag_status_{0};
     int last_servo_command_error_{0};
+    std::uint64_t servo_command_attempt_count_{0};
+    std::uint64_t servo_command_success_count_{0};
+    std::chrono::steady_clock::time_point servo_motion_started_{};
     int last_servo_disable_error_{0};
     double command_timeout_seconds_{0.30};
     double feedback_timeout_seconds_{0.30};

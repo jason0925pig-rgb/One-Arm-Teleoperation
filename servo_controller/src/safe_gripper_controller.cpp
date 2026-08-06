@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -269,6 +270,23 @@ private:
             current_position_ = target_position_;
             moving_ = true;
             movement_started_ = std::chrono::steady_clock::now();
+            ++command_count_;
+            if (requested_open_) {
+                ++open_command_count_;
+            } else {
+                ++close_command_count_;
+            }
+            RCLCPP_WARN(
+                get_logger(),
+                "TELEMETRY_EVENT event=gripper_command sequence=%llu "
+                "action=%s target=%d speed=%d force=%d opens=%llu closes=%llu",
+                static_cast<unsigned long long>(command_count_),
+                requested_open_ ? "open" : "close",
+                target_position_,
+                command_speed_,
+                command_force_,
+                static_cast<unsigned long long>(open_command_count_),
+                static_cast<unsigned long long>(close_command_count_));
             std_msgs::msg::Bool executed;
             executed.data = requested_open_;
             executed_command_pub_->publish(executed);
@@ -337,11 +355,20 @@ private:
         }
         moving_ = false;
         enabled_ = false;
+        RCLCPP_ERROR(
+            get_logger(),
+            "TELEMETRY_EVENT event=gripper_stop reason=\"%s\" "
+            "commands=%llu opens=%llu closes=%llu",
+            reason.c_str(),
+            static_cast<unsigned long long>(command_count_),
+            static_cast<unsigned long long>(open_command_count_),
+            static_cast<unsigned long long>(close_command_count_));
         RCLCPP_ERROR(get_logger(), "Gripper safety stop: %s", reason.c_str());
     }
 
     void poll_state() {
         std::lock_guard<std::mutex> lock(mutex_);
+        const bool was_moving = moving_;
         std::string state = enabled_ ? "IDLE" : "DISABLED";
         try {
             if (enabled_ && moving_) {
@@ -418,6 +445,21 @@ private:
             state = std::string("ERROR:") + error.what();
         }
 
+        if (was_moving && !moving_) {
+            const double movement_seconds = std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - movement_started_).count();
+            RCLCPP_WARN(
+                get_logger(),
+                "TELEMETRY_EVENT event=gripper_motion_finished sequence=%llu "
+                "action=%s result=%s elapsed_s=%.6f contact=%d alarm=%u",
+                static_cast<unsigned long long>(command_count_),
+                requested_open_ ? "open" : "close",
+                state.c_str(),
+                movement_seconds,
+                contact_,
+                static_cast<unsigned int>(last_alarm_));
+        }
+
         sensor_msgs::msg::JointState joint_state;
         joint_state.header.stamp = now();
         joint_state.name = {arm_name_ + "_gripper"};
@@ -481,6 +523,9 @@ private:
     bool has_requested_state_{false};
     bool requested_open_{false};
     bool feedback_position_valid_{false};
+    std::uint64_t command_count_{0};
+    std::uint64_t open_command_count_{0};
+    std::uint64_t close_command_count_{0};
     bool contact_{false};
     int target_position_{0};
     int current_position_{0};
