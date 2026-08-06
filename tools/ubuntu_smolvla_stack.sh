@@ -115,7 +115,7 @@ preflight() {
     return 1
   }
   local conflicts owners
-  conflicts="$(pgrep -af 'robot_timer|test_joint_trajectory_sub|gripper_controller|safe_one_arm_servo|safe_gripper_controller|udp_leader_bridge|[p]i0' 2>/dev/null || true)"
+  conflicts="$(pgrep -af 'robot_timer|test_joint_trajectory_sub|gripper_controller|safe_one_arm_servo|safe_gripper_controller|udp_leader_bridge|(^|[[:space:]/])pi0([[:space:]/]|$)' 2>/dev/null || true)"
   [[ -z "${conflicts}" ]] || {
     echo "ERROR: an existing robot/policy process is running:" >&2
     printf '%s\n' "${conflicts}" >&2
