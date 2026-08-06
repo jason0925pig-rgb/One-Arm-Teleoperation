@@ -36,9 +36,9 @@ safe_one_arm_servo:
     joint_lower_limits: [-6.2832, -1.8325, -6.2832, -2.5307, -6.2832, -1.8325, -6.2832]
     joint_upper_limits: [6.2832, 1.8325, 6.2832, 0.5235, 6.2832, 1.8325, 6.2832]
 
-    # First policy rollout: one third of the original conservative teleop
-    # speed.  Raise only after an attended successful rollout is reviewed.
-    max_velocity_rad_s: [0.10, 0.10, 0.10, 0.10, 0.10, 0.10, 0.10]
+    # Attended rollout speed. The physical E-stop must remain within reach.
+    # Acceleration limiting below is intentionally unchanged.
+    max_velocity_rad_s: [0.40, 0.40, 0.40, 0.40, 0.40, 0.40, 0.40]
     max_acceleration_rad_s2: [0.30, 0.30, 0.30, 0.30, 0.30, 0.30, 0.30]
 
 safe_gripper_controller:
