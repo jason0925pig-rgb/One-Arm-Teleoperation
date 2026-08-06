@@ -58,6 +58,7 @@ class ArmstrongRos2(Robot):
         self._wrist_time = 0.0
         self._gripper_closed = False
         self._last_gripper_command: bool | None = None
+        self._last_safe_joint_command: tuple[float, ...] | None = None
         self._owns_rclpy_context = False
         self._guard_config = PolicySafetyConfig(
             task_lower=tuple(config.task_lower),
@@ -235,6 +236,7 @@ class ArmstrongRos2(Robot):
     def _set_enabled(self, request: SetBool.Request, response: SetBool.Response) -> SetBool.Response:
         if not request.data:
             self._action_enabled = False
+            self._last_safe_joint_command = None
             self._publish_stop()
             response.success = True
             response.message = "SmolVLA action gate disabled and STOP published"
@@ -280,14 +282,12 @@ class ArmstrongRos2(Robot):
             )
         except PolicySafetyError:
             self._action_enabled = False
+            self._last_safe_joint_command = None
             self._publish_stop()
             raise
 
-        message = JointState()
-        message.header.stamp = self._node.get_clock().now().to_msg()
-        message.name = list(JOINT_NAMES)
-        message.position = list(guarded_joints)
-        self._joint_pub.publish(message)
+        self._last_safe_joint_command = tuple(guarded_joints)
+        self._publish_joint_command(self._last_safe_joint_command)
         if self._last_gripper_command is None or guarded_gripper != self._last_gripper_command:
             gripper_message = Bool()
             gripper_message.data = guarded_gripper
@@ -297,6 +297,23 @@ class ArmstrongRos2(Robot):
             **dict(zip(JOINT_NAMES, guarded_joints, strict=True)),
             GRIPPER_NAME: float(guarded_gripper),
         }
+
+    def _publish_joint_command(self, joints: tuple[float, ...]) -> None:
+        message = JointState()
+        message.header.stamp = self._node.get_clock().now().to_msg()
+        message.name = list(JOINT_NAMES)
+        message.position = list(joints)
+        self._joint_pub.publish(message)
+
+    def resend_last_joint_command(self) -> bool:
+        """Keep the last guarded target alive while the next chunk is inferred."""
+        if not self._connected or not self._action_enabled:
+            return False
+        command = self._last_safe_joint_command
+        if command is None:
+            return False
+        self._publish_joint_command(command)
+        return True
 
     def _publish_stop(self) -> None:
         if self._node is None:
@@ -340,6 +357,7 @@ class ArmstrongRos2(Robot):
         if not self._connected:
             return
         self._action_enabled = False
+        self._last_safe_joint_command = None
         self._publish_stop()
         self._connected = False
         if self._executor is not None:

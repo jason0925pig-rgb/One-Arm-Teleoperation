@@ -17,8 +17,12 @@ safe_one_arm_servo:
 
     # Autonomous inference restores fail-stop watchdogs.  This is intentionally
     # different from the relaxed human-attended data-collection profile.
-    command_timeout_seconds: 0.50
-    feedback_timeout_seconds: 0.50
+    # Orin inference currently takes about 1.5-1.7 s per 50-action chunk.
+    # The ROS client refreshes the last guarded target at 30 Hz between
+    # chunks; five seconds still stops a dead client without treating normal
+    # inference or a short controller-status pause as a disconnect.
+    command_timeout_seconds: 5.0
+    feedback_timeout_seconds: 5.0
     stop_on_command_timeout: true
     stop_on_feedback_timeout: true
     control_rate_hz: 125.0

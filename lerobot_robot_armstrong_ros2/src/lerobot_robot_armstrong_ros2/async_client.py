@@ -30,6 +30,12 @@ class ArmstrongRobotClient(RobotClient):
             if not self.running:
                 return None
             start_time = time.perf_counter()
+            # The Orin currently needs roughly 1.5-1.7 seconds to infer a
+            # 50-action chunk.  Re-publish the most recent guarded joint
+            # target at the 30 Hz client rate while a replacement chunk is in
+            # flight.  If this process dies, the lower-level watchdog still
+            # stops the arm after its configured timeout.
+            self.robot.resend_last_joint_command()
             raw_observation = self.robot.get_observation()
             raw_observation["task"] = task
             with self.latest_action_lock:
@@ -66,6 +72,17 @@ class ArmstrongRobotClient(RobotClient):
             return raw_observation
         except Exception as exc:
             self.logger.error("Error in Armstrong observation sender: %s", exc)
+            return None
+
+    def control_loop_action(self, verbose: bool = False):
+        try:
+            return super().control_loop_action(verbose)
+        except Exception as exc:
+            # A short feedback pause must not tear down the whole client. The
+            # failed action was already removed from the queue; later actions
+            # resume after feedback becomes fresh, while the last guarded
+            # target continues to be refreshed by control_loop_observation.
+            self.logger.error("Error in Armstrong action sender: %s", exc)
             return None
 
 
