@@ -1,6 +1,7 @@
 """Armstrong-specific LeRobot async client with overlapping action chunks."""
 
 import logging
+import signal
 import threading
 import time
 from dataclasses import asdict
@@ -68,6 +69,14 @@ class ArmstrongRobotClient(RobotClient):
 def main(cfg: RobotClientConfig) -> None:
     logging.info(pformat(asdict(cfg)))
     client = ArmstrongRobotClient(cfg)
+
+    def request_stop(signum, _frame) -> None:
+        client.logger.warning("Stop signal %s received; closing the async client", signum)
+        client.shutdown_event.set()
+        client.channel.close()
+
+    signal.signal(signal.SIGINT, request_stop)
+    signal.signal(signal.SIGTERM, request_stop)
     if not client.start():
         raise SystemExit(2)
     action_receiver = threading.Thread(target=client.receive_actions, daemon=True)

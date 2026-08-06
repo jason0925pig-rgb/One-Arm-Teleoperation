@@ -15,6 +15,8 @@ FPS="${SMOLVLA_FPS:-30}"
 AGGREGATE_FN="${SMOLVLA_AGGREGATE_FN:-weighted_average}"
 POLICY_DEVICE="${SMOLVLA_POLICY_DEVICE:-cuda}"
 CLIENT_DEVICE="${SMOLVLA_CLIENT_DEVICE:-cpu}"
+STATE_TIMEOUT_SECONDS="${SMOLVLA_STATE_TIMEOUT_SECONDS:-0.3}"
+CAMERA_TIMEOUT_SECONDS="${SMOLVLA_CAMERA_TIMEOUT_SECONDS:-0.3}"
 
 [[ -r "${ROS_SETUP}" ]] || { echo "ERROR: missing ${ROS_SETUP}" >&2; exit 2; }
 [[ -r "${WORKSPACE_SETUP}" ]] || { echo "ERROR: build the ROS workspace first" >&2; exit 2; }
@@ -42,6 +44,8 @@ echo "Policy server=${SERVER_ADDRESS} actions_per_chunk=${ACTIONS_PER_CHUNK} fps
 exec "${VENV}/bin/python" -m lerobot_robot_armstrong_ros2.async_client \
   --robot.type=armstrong_ros2 \
   --robot.id=armstrong_right \
+  --robot.state_timeout_seconds="${STATE_TIMEOUT_SECONDS}" \
+  --robot.camera_timeout_seconds="${CAMERA_TIMEOUT_SECONDS}" \
   --task="${TASK}" \
   --server_address="${SERVER_ADDRESS}" \
   --policy_type=smolvla \

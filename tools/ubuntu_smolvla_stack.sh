@@ -225,7 +225,11 @@ status_stack() {
   done
   ros2 node list 2>/dev/null || true
   python3 "${PROJECT_ROOT}/tools/wait_for_string_topic.py" /right_arm/safety_status --timeout 2 || true
-  python3 "${PROJECT_ROOT}/tools/wait_for_string_topic.py" /smolvla/status --timeout 2 || true
+  if ros2 node list 2>/dev/null | grep -Fxq /armstrong_lerobot_client; then
+    python3 "${PROJECT_ROOT}/tools/wait_for_string_topic.py" /smolvla/status --timeout 2 || true
+  else
+    echo "smolvla_client=stopped"
+  fi
 }
 
 case "${ACTION}" in
