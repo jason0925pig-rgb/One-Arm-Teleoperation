@@ -7,12 +7,18 @@ SERVER_PID_FILE="${RUNTIME_DIR}/policy_server.pid"
 CLIENT_PID_FILE="${RUNTIME_DIR}/policy_client.pid"
 SERVER_LOG="${RUNTIME_DIR}/policy_server.log"
 CLIENT_LOG="${RUNTIME_DIR}/policy_client.log"
+EVENT_LOG="${RUNTIME_DIR}/launcher_events.log"
 STOPPING=0
 STOP_SOURCE="normal_exit"
 CLIENT_LOG_STREAM_PID=""
 SERVER_LOG_STREAM_PID=""
 
 mkdir -p "${RUNTIME_DIR}"
+
+emit_launcher_event() {
+  printf 'TELEMETRY_EVENT %s wall_time=%s\n' "$1" "$(date --iso-8601=ns)" |
+    tee -a "${EVENT_LOG}"
+}
 # shellcheck disable=SC1091
 source "${PROJECT_ROOT}/tools/smolvla_orin_env.sh"
 if [[ -n "${SMOLVLA_TASK_B64:-}" ]]; then
@@ -62,8 +68,7 @@ cleanup() {
   STOPPING=1
   trap - EXIT INT TERM HUP
   echo
-  printf 'TELEMETRY_EVENT event=launcher_cleanup source=%s wall_time=%s\n' \
-    "${STOP_SOURCE}" "$(date --iso-8601=ns)"
+  emit_launcher_event "event=launcher_cleanup source=${STOP_SOURCE}"
   echo "Stopping policy motion, servo mode, gripper, robot enable and power..."
   "${PROJECT_ROOT}/tools/ubuntu_smolvla_stack.sh" stop || true
   stop_managed "${CLIENT_PID_FILE}"
@@ -83,8 +88,7 @@ cleanup() {
 handle_signal() {
   local signal_name="$1" exit_code="$2"
   STOP_SOURCE="signal_${signal_name}"
-  printf 'TELEMETRY_EVENT event=operator_interrupt source=%s wall_time=%s\n' \
-    "${STOP_SOURCE}" "$(date --iso-8601=ns)"
+  emit_launcher_event "event=operator_interrupt source=${STOP_SOURCE}"
   exit "${exit_code}"
 }
 
@@ -180,6 +184,7 @@ fi
 # retained in the shared runtime directory from an earlier rollout.
 : >"${SERVER_LOG}"
 : >"${CLIENT_LOG}"
+: >"${EVENT_LOG}"
 
 echo "============================================================"
 echo "SmolVLA / Armstrong single-window launcher"
@@ -266,8 +271,7 @@ echo "机器人正在由模型控制。按 Ctrl+C，或输入 STOP 并回车，�
 while read -r answer; do
   if [[ "${answer}" == "STOP" ]]; then
     STOP_SOURCE="operator_typed_stop"
-    printf 'TELEMETRY_EVENT event=operator_stop source=typed_STOP wall_time=%s\n' \
-      "$(date --iso-8601=ns)"
+    emit_launcher_event "event=operator_stop source=typed_STOP"
     break
   fi
   echo "Type STOP then Enter, or press Ctrl+C, to stop."
