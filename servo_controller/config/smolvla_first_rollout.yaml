@@ -41,9 +41,12 @@ safe_one_arm_servo:
     joint_lower_limits: [-6.2832, -1.8325, -6.2832, -2.5307, -6.2832, -1.8325, -6.2832]
     joint_upper_limits: [6.2832, 1.8325, 6.2832, 0.5235, 6.2832, 1.8325, 6.2832]
 
-    # Attended rollout speed. The physical E-stop must remain within reach.
-    # Acceleration limiting below is intentionally unchanged.
-    max_velocity_rad_s: [0.60, 0.60, 0.60, 0.60, 0.60, 0.60, 0.60]
+    # Attended diagnostic rollout: effectively disable the software's fixed
+    # velocity ceiling.  The limiter requires a finite positive value, so a
+    # deliberately unreachable 100 rad/s is used instead of zero/inf.
+    # Joint-position limits, the policy target-error guard, the acceleration
+    # ramp below, SDK/controller limits and the physical E-stop remain active.
+    max_velocity_rad_s: [100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0]
     max_acceleration_rad_s2: [0.30, 0.30, 0.30, 0.30, 0.30, 0.30, 0.30]
 
 safe_gripper_controller:
