@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import threading
 import time
 from typing import Any
@@ -81,6 +82,8 @@ class ArmstrongRos2(Robot):
         self._policy_chunk_ready = False
         self._completion_result = None
         self._completion_stop_published = False
+        self._completion_initial_joints: tuple[float, ...] | None = None
+        self._rollout_end_logged = False
         self._owns_rclpy_context = False
         self._guard_config = PolicySafetyConfig(
             task_lower=tuple(config.task_lower),
@@ -267,6 +270,7 @@ class ArmstrongRos2(Robot):
 
     def _motion_enabled_callback(self, message: Bool) -> None:
         publish_stop = False
+        endpoint = None
         with self._lock:
             self._arm_motion_enabled = bool(message.data)
             if self._action_enabled and not self._arm_motion_enabled:
@@ -277,9 +281,18 @@ class ArmstrongRos2(Robot):
                     initial_closed=self._gripper_closed,
                     now=time.monotonic(),
                 )
+                if not self._rollout_end_logged and self._joint_state is not None:
+                    endpoint = (self._completion_initial_joints, self._joint_state)
+                    self._rollout_end_logged = True
                 publish_stop = True
         if publish_stop:
             if self._node is not None:
+                if endpoint is not None:
+                    self._node.get_logger().error(
+                        "TELEMETRY_EVENT event=rollout_end "
+                        "source=arm_motion_gate_closed "
+                        + self._pose_comparison_fields(*endpoint)
+                    )
                 self._node.get_logger().error(
                     "TELEMETRY_EVENT event=policy_stop "
                     "source=arm_motion_gate_closed; policy and gripper "
@@ -341,7 +354,15 @@ class ArmstrongRos2(Robot):
 
     def _set_enabled(self, request: SetBool.Request, response: SetBool.Response) -> SetBool.Response:
         if not request.data:
+            endpoint = None
             with self._lock:
+                if (
+                    self._action_enabled
+                    and not self._rollout_end_logged
+                    and self._joint_state is not None
+                ):
+                    endpoint = (self._completion_initial_joints, self._joint_state)
+                    self._rollout_end_logged = True
                 self._action_enabled = False
                 self._last_safe_joint_command = None
                 self._last_gripper_command = None
@@ -354,6 +375,12 @@ class ArmstrongRos2(Robot):
                 self._completion_stop_published = False
             self._publish_stop()
             if self._node is not None:
+                if endpoint is not None:
+                    self._node.get_logger().error(
+                        "TELEMETRY_EVENT event=rollout_end "
+                        "source=set_enabled_false "
+                        + self._pose_comparison_fields(*endpoint)
+                    )
                 self._node.get_logger().error(
                     "TELEMETRY_EVENT event=policy_stop "
                     "source=set_enabled_false"
@@ -401,7 +428,17 @@ class ArmstrongRos2(Robot):
             )
             self._completion_result = None
             self._completion_stop_published = False
+            self._completion_initial_joints = tuple(joints)
+            self._rollout_end_logged = False
             self._action_enabled = True
+        if self._node is not None:
+            self._node.get_logger().warn(
+                "TELEMETRY_EVENT event=rollout_start source=policy_gate_enabled "
+                f"initial_joints_rad={self._format_joint_values(joints)} "
+                f"initial_joints_deg={self._format_joint_values(self._to_degrees(joints))} "
+                f"departure_threshold_rad={self.config.completion_departure_threshold_rad:.6f} "
+                f"return_tolerance_rad={self.config.completion_return_tolerance_rad:.6f}"
+            )
         response.success = True
         response.message = (
             "SmolVLA action gate enabled; gripper temporal hysteresis active"
@@ -495,6 +532,7 @@ class ArmstrongRos2(Robot):
                     self._action_enabled = False
                     self._last_safe_joint_command = None
                     self._last_gripper_command = None
+                    self._rollout_end_logged = True
                     should_stop = True
         if should_stop:
             if self._node is not None:
@@ -503,9 +541,42 @@ class ArmstrongRos2(Robot):
                     "source=stable_return_home "
                     f"max_start_error_rad={result.maximum_start_error_rad:.6f} "
                     f"max_speed_rad_s={result.maximum_speed_rad_s:.6f} "
-                    f"stable_seconds={result.stable_seconds:.3f}"
+                    f"stable_seconds={result.stable_seconds:.3f} "
+                    + self._pose_comparison_fields(
+                        self._completion_initial_joints, joints
+                    )
                 )
             self._publish_stop()
+
+    @staticmethod
+    def _format_joint_values(values: tuple[float, ...]) -> str:
+        return "[" + ",".join(f"{value:.6f}" for value in values) + "]"
+
+    @staticmethod
+    def _to_degrees(values: tuple[float, ...]) -> tuple[float, ...]:
+        return tuple(value * 180.0 / math.pi for value in values)
+
+    @classmethod
+    def _pose_comparison_fields(
+        cls,
+        initial_joints: tuple[float, ...] | None,
+        actual_joints: tuple[float, ...],
+    ) -> str:
+        if initial_joints is None:
+            return (
+                "initial_joints_rad=unavailable "
+                f"actual_joints_rad={cls._format_joint_values(actual_joints)}"
+            )
+        deltas = tuple(
+            actual - initial
+            for actual, initial in zip(actual_joints, initial_joints, strict=True)
+        )
+        return (
+            f"initial_joints_rad={cls._format_joint_values(initial_joints)} "
+            f"actual_joints_rad={cls._format_joint_values(actual_joints)} "
+            f"delta_joints_rad={cls._format_joint_values(deltas)} "
+            f"delta_joints_deg={cls._format_joint_values(cls._to_degrees(deltas))}"
+        )
 
     def _publish_joint_command(self, joints: tuple[float, ...]) -> None:
         message = JointState()
