@@ -137,9 +137,11 @@ PY
 }
 
 wait_for_fresh_joint_stream() {
-  timeout 15 ros2 topic echo --once /right_arm/joint_states >/dev/null
-  sleep 0.5
-  timeout 15 ros2 topic echo --once /right_arm/joint_states >/dev/null
+  echo "Waiting for three valid seven-joint feedback samples..."
+  python3 "${PROJECT_ROOT}/tools/wait_for_joint_state.py" \
+    --topic /right_arm/joint_states \
+    --timeout 20 \
+    --minimum-messages 3
 }
 
 pre_arm_safety_check() {
