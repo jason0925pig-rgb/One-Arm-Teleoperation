@@ -10,16 +10,24 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
+
+#if defined(__linux__)
+#include <pthread.h>
+#include <sched.h>
+#endif
 
 using namespace std::chrono_literals;
 
@@ -52,6 +60,9 @@ public:
         stop_on_feedback_timeout_ =
             declare_parameter<bool>("stop_on_feedback_timeout", true);
         control_rate_hz_ = declare_parameter<double>("control_rate_hz", 125.0);
+        servo_thread_cpu_ = declare_parameter<int>("servo_thread_cpu", 1);
+        servo_thread_realtime_priority_ =
+            declare_parameter<int>("servo_thread_realtime_priority", 60);
         servo_step_num_ = declare_parameter<int>("servo_step_num", 1);
         state_rate_hz_ = declare_parameter<double>("state_rate_hz", 20.0);
         control_deadline_warning_factor_ =
@@ -157,26 +168,28 @@ public:
         const auto state_period = std::chrono::microseconds(
             static_cast<std::chrono::microseconds::rep>(
                 std::llround(1'000'000.0 / std::max(1.0, state_rate_hz_))));
-        control_timer_ = create_wall_timer(
-            control_period,
-            std::bind(&SafeOneArmServo::control_tick, this));
+        servo_period_ = control_period;
         state_timer_ = create_wall_timer(
             state_period,
             std::bind(&SafeOneArmServo::state_tick, this));
         status_timer_ = create_wall_timer(
             500ms, std::bind(&SafeOneArmServo::publish_status, this));
+        start_servo_thread();
 
         RCLCPP_WARN(
             get_logger(),
             "Safe one-arm node started: arm=%s dry_run=%d connected=%d "
-            "control_period_us=%lld servo_step_num=%d sdk_servo_period_ms=%.1f. "
+            "control_period_us=%lld servo_step_num=%d sdk_servo_period_ms=%.1f "
+            "servo_thread_cpu=%d requested_realtime_priority=%d. "
             "It does not power, enable, or enter servo mode at startup.",
             arm_name_.c_str(),
             dry_run_,
             connected_,
             static_cast<long long>(control_period.count()),
             servo_step_num_,
-            static_cast<double>(servo_step_num_) * 8.0);
+            static_cast<double>(servo_step_num_) * 8.0,
+            servo_thread_cpu_,
+            servo_thread_realtime_priority_);
         if (power_on_on_arm_) {
             RCLCPP_ERROR(
                 get_logger(),
@@ -200,6 +213,7 @@ public:
     }
 
     ~SafeOneArmServo() override {
+        stop_servo_thread();
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (
@@ -224,6 +238,84 @@ public:
 private:
     static constexpr std::size_t kJointCount = 7;
 
+    void start_servo_thread() {
+        servo_thread_stop_.store(false);
+        servo_thread_ = std::thread([this]() { servo_loop(); });
+    }
+
+    void stop_servo_thread() {
+        servo_thread_stop_.store(true);
+        if (servo_thread_.joinable()) {
+            servo_thread_.join();
+        }
+    }
+
+    void configure_servo_thread() {
+#if defined(__linux__)
+        pthread_setname_np(pthread_self(), "jaka_servo_125");
+        if (servo_thread_cpu_ >= 0) {
+            cpu_set_t cpuset;
+            CPU_ZERO(&cpuset);
+            CPU_SET(servo_thread_cpu_, &cpuset);
+            const int affinity_result = pthread_setaffinity_np(
+                pthread_self(), sizeof(cpu_set_t), &cpuset);
+            if (affinity_result != 0) {
+                RCLCPP_WARN(
+                    get_logger(),
+                    "Could not pin servo thread to CPU %d: %s. Continuing "
+                    "with the independent periodic thread.",
+                    servo_thread_cpu_,
+                    std::strerror(affinity_result));
+            } else {
+                servo_thread_affinity_enabled_.store(true);
+            }
+        }
+        if (servo_thread_realtime_priority_ > 0) {
+            sched_param scheduling{};
+            scheduling.sched_priority = servo_thread_realtime_priority_;
+            const int schedule_result = pthread_setschedparam(
+                pthread_self(), SCHED_FIFO, &scheduling);
+            if (schedule_result != 0) {
+                RCLCPP_WARN(
+                    get_logger(),
+                    "Could not enable SCHED_FIFO priority %d for the servo "
+                    "thread: %s. Continuing safely with normal scheduling.",
+                    servo_thread_realtime_priority_,
+                    std::strerror(schedule_result));
+            } else {
+                servo_thread_realtime_enabled_.store(true);
+            }
+        }
+#endif
+        servo_thread_running_.store(true);
+        RCLCPP_INFO(
+            get_logger(),
+            "TELEMETRY_EVENT event=servo_thread_started cpu=%d affinity=%d "
+            "requested_realtime_priority=%d realtime=%d period_us=%lld",
+            servo_thread_cpu_,
+            servo_thread_affinity_enabled_.load(),
+            servo_thread_realtime_priority_,
+            servo_thread_realtime_enabled_.load(),
+            static_cast<long long>(servo_period_.count()));
+    }
+
+    void servo_loop() {
+        configure_servo_thread();
+        auto next_wake = std::chrono::steady_clock::now();
+        while (!servo_thread_stop_.load()) {
+            next_wake += servo_period_;
+            control_tick();
+            const auto now = std::chrono::steady_clock::now();
+            if (now > next_wake + servo_period_) {
+                // Do not burst several stale SDK commands after a delayed
+                // cycle; restart the phase from the current monotonic time.
+                next_wake = now;
+            }
+            std::this_thread::sleep_until(next_wake);
+        }
+        servo_thread_running_.store(false);
+    }
+
     bool validate_safety_configuration() {
         if (!limits_configured_) {
             return false;
@@ -231,6 +323,9 @@ private:
         if (
             !std::isfinite(control_rate_hz_) || control_rate_hz_ <= 0.0 ||
             servo_step_num_ <= 0 ||
+            servo_thread_cpu_ < -1 ||
+            servo_thread_realtime_priority_ < 0 ||
+            servo_thread_realtime_priority_ > 99 ||
             std::abs(
                 1.0 / control_rate_hz_ -
                 static_cast<double>(servo_step_num_) * 0.008) > 0.001 ||
@@ -1277,6 +1372,7 @@ private:
     }
 
     void publish_status() {
+        std::lock_guard<std::mutex> lock(mutex_);
         std_msgs::msg::Bool enabled;
         enabled.data = motion_enabled_;
         enabled_pub_->publish(enabled);
@@ -1326,6 +1422,14 @@ private:
              << ";stop_on_control_deadline_abort="
              << stop_on_control_deadline_abort_
              << ";control_rate_hz=" << control_rate_hz_
+             << ";servo_thread_running=" << servo_thread_running_.load()
+             << ";servo_thread_cpu=" << servo_thread_cpu_
+             << ";servo_thread_affinity="
+             << servo_thread_affinity_enabled_.load()
+             << ";servo_thread_requested_realtime_priority="
+             << servo_thread_realtime_priority_
+             << ";servo_thread_realtime="
+             << servo_thread_realtime_enabled_.load()
              << ";servo_step_num=" << servo_step_num_
              << ";sdk_servo_period_s="
              << static_cast<double>(servo_step_num_) * 0.008
@@ -1378,6 +1482,8 @@ private:
     bool stop_on_command_timeout_{true};
     bool stop_on_feedback_timeout_{true};
     double control_rate_hz_{125.0};
+    int servo_thread_cpu_{1};
+    int servo_thread_realtime_priority_{60};
     int servo_step_num_{1};
     double state_rate_hz_{20.0};
     double control_deadline_warning_factor_{1.5};
@@ -1403,6 +1509,12 @@ private:
     std::uint64_t control_deadline_misses_{0};
     double last_control_period_seconds_{0.0};
     double max_control_period_seconds_{0.0};
+    std::chrono::microseconds servo_period_{8000};
+    std::atomic<bool> servo_thread_stop_{false};
+    std::atomic<bool> servo_thread_running_{false};
+    std::atomic<bool> servo_thread_affinity_enabled_{false};
+    std::atomic<bool> servo_thread_realtime_enabled_{false};
+    std::thread servo_thread_;
     std::mutex mutex_;
     rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr command_sub_;
     rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr stop_sub_;
@@ -1418,7 +1530,6 @@ private:
     rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr drag_service_;
     rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr motion_service_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reconnect_service_;
-    rclcpp::TimerBase::SharedPtr control_timer_;
     rclcpp::TimerBase::SharedPtr state_timer_;
     rclcpp::TimerBase::SharedPtr status_timer_;
 };

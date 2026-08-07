@@ -12,6 +12,7 @@ class ArmstrongRos2Config(RobotConfig):
     joint_command_topic: str = "/right_arm/teleop_joint_command"
     motion_enabled_topic: str = "/right_arm/motion_enabled"
     gripper_state_topic: str = "/right_arm/executed_gripper_command"
+    gripper_contact_topic: str = "/right_arm/gripper_contact"
     gripper_command_topic: str = "/right_arm/gripper_command"
     chest_topic: str = "/camera_chest/color/image_raw/compressed"
     wrist_topic: str = "/camera_wrist/color/image_raw/compressed"
@@ -66,5 +67,8 @@ class ArmstrongRos2Config(RobotConfig):
     )
     max_target_error_rad: float = 0.50
     small_envelope_overshoot_rad: float = 0.03
-    gripper_open_threshold: float = 0.35
-    gripper_close_threshold: float = 0.65
+    gripper_open_threshold: float = 0.15
+    gripper_close_threshold: float = 0.85
+    gripper_confirmation_frames: int = 10
+    gripper_min_state_dwell_seconds: float = 2.0
+    gripper_contact_hold_seconds: float = 3.0

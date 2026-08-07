@@ -13,6 +13,7 @@ find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
+find_package(Threads REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
@@ -51,7 +52,7 @@ target_include_directories(safe_one_arm_servo PUBLIC
   include
   "include/${ARCH_DIR}"
 )
-target_link_libraries(safe_one_arm_servo "${JAKA_LIB_PATH}")
+target_link_libraries(safe_one_arm_servo "${JAKA_LIB_PATH}" Threads::Threads)
 ament_target_dependencies(safe_one_arm_servo
   rclcpp
   sensor_msgs

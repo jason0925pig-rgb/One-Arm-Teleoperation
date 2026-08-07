@@ -17,6 +17,8 @@ from std_srvs.srv import SetBool
 from lerobot.robots.robot import Robot
 
 from one_arm_teleop_bridge.smolvla_guard import (
+    GripperTemporalConfig,
+    GripperTemporalFilter,
     PolicySafetyConfig,
     PolicySafetyError,
     guard_policy_action,
@@ -66,6 +68,7 @@ class ArmstrongRos2(Robot):
         self._wrist: np.ndarray | None = None
         self._wrist_time = 0.0
         self._gripper_closed = False
+        self._gripper_contact = False
         self._last_gripper_command: bool | None = None
         self._model_gripper_command_count = 0
         self._model_gripper_open_count = 0
@@ -84,6 +87,17 @@ class ArmstrongRos2(Robot):
             small_envelope_overshoot_rad=config.small_envelope_overshoot_rad,
             gripper_open_threshold=config.gripper_open_threshold,
             gripper_close_threshold=config.gripper_close_threshold,
+        )
+        self._gripper_filter = GripperTemporalFilter(
+            GripperTemporalConfig(
+                open_threshold=config.gripper_open_threshold,
+                close_threshold=config.gripper_close_threshold,
+                confirmation_frames=config.gripper_confirmation_frames,
+                min_state_dwell_seconds=config.gripper_min_state_dwell_seconds,
+                contact_hold_seconds=config.gripper_contact_hold_seconds,
+            ),
+            initial_closed=False,
+            now=time.monotonic(),
         )
 
     @property
@@ -161,6 +175,9 @@ class ArmstrongRos2(Robot):
             Bool, self.config.gripper_state_topic, self._gripper_callback, 10
         )
         self._node.create_subscription(
+            Bool, self.config.gripper_contact_topic, self._gripper_contact_callback, 10
+        )
+        self._node.create_subscription(
             CompressedImage,
             self.config.chest_topic,
             self._chest_callback,
@@ -223,6 +240,10 @@ class ArmstrongRos2(Robot):
                 message.data
             )
 
+    def _gripper_contact_callback(self, message: Bool) -> None:
+        with self._lock:
+            self._gripper_contact = bool(message.data)
+
     def _motion_enabled_callback(self, message: Bool) -> None:
         publish_stop = False
         with self._lock:
@@ -231,6 +252,10 @@ class ArmstrongRos2(Robot):
                 self._action_enabled = False
                 self._last_safe_joint_command = None
                 self._last_gripper_command = None
+                self._gripper_filter.reset(
+                    initial_closed=self._gripper_closed,
+                    now=time.monotonic(),
+                )
                 publish_stop = True
         if publish_stop:
             if self._node is not None:
@@ -294,9 +319,14 @@ class ArmstrongRos2(Robot):
 
     def _set_enabled(self, request: SetBool.Request, response: SetBool.Response) -> SetBool.Response:
         if not request.data:
-            self._action_enabled = False
-            self._last_safe_joint_command = None
-            self._last_gripper_command = None
+            with self._lock:
+                self._action_enabled = False
+                self._last_safe_joint_command = None
+                self._last_gripper_command = None
+                self._gripper_filter.reset(
+                    initial_closed=self._gripper_closed,
+                    now=time.monotonic(),
+                )
             self._publish_stop()
             if self._node is not None:
                 self._node.get_logger().error(
@@ -330,9 +360,20 @@ class ArmstrongRos2(Robot):
             response.success = False
             response.message = str(exc)
             return response
-        self._action_enabled = True
+        with self._lock:
+            self._gripper_filter.reset(
+                initial_closed=gripper_closed,
+                now=time.monotonic(),
+            )
+            # Initialization has already opened the follower gripper.  Do not
+            # re-publish a binary command until the model earns a confirmed
+            # transition through the temporal filter.
+            self._last_gripper_command = gripper_closed
+            self._action_enabled = True
         response.success = True
-        response.message = "SmolVLA action gate enabled"
+        response.message = (
+            "SmolVLA action gate enabled; gripper temporal hysteresis active"
+        )
         return response
 
     def send_action(self, action: dict[str, float]) -> dict[str, float]:
@@ -343,7 +384,7 @@ class ArmstrongRos2(Robot):
         joints, gripper_closed, _, _ = self._snapshot()
         predicted = tuple(float(action[name]) for name in (*JOINT_NAMES, GRIPPER_NAME))
         try:
-            guarded_joints, guarded_gripper = guard_policy_action(
+            guarded_joints, _ = guard_policy_action(
                 predicted,
                 (*joints, float(gripper_closed)),
                 gripper_closed,
@@ -362,9 +403,18 @@ class ArmstrongRos2(Robot):
                 )
             raise
 
+        now = time.monotonic()
+        with self._lock:
+            temporal_gripper = self._gripper_filter.update(
+                predicted[-1],
+                now=now,
+                contact_active=self._gripper_contact,
+            )
+        guarded_gripper = temporal_gripper.command_closed
+
         self._last_safe_joint_command = tuple(guarded_joints)
         self._publish_joint_command(self._last_safe_joint_command)
-        if self._last_gripper_command is None or guarded_gripper != self._last_gripper_command:
+        if temporal_gripper.transitioned:
             gripper_message = Bool()
             # ROS command=True requests OPEN; guarded_gripper=True means
             # CLOSED in the LeRobot action space, so the value must invert.
@@ -382,6 +432,8 @@ class ArmstrongRos2(Robot):
                     f"sequence={self._model_gripper_command_count} "
                     f"action={'close' if guarded_gripper else 'open'} "
                     f"raw_model={predicted[-1]:.6f} "
+                    f"confirmed_frames={self.config.gripper_confirmation_frames} "
+                    f"contact={int(self._gripper_contact)} "
                     f"opens={self._model_gripper_open_count} "
                     f"closes={self._model_gripper_close_count} "
                     f"actual_joints={joints} guarded_joints={guarded_joints}"
@@ -431,6 +483,10 @@ class ArmstrongRos2(Robot):
             policy_expected_chunk_size = self._policy_expected_chunk_size
             policy_chunk_ready = self._policy_chunk_ready
             arm_motion_enabled = self._arm_motion_enabled
+            gripper_contact = self._gripper_contact
+            gripper_candidate = self._gripper_filter.candidate_closed
+            gripper_candidate_count = self._gripper_filter.candidate_count
+            gripper_command_closed = self._gripper_filter.command_closed
         observation_ready = (
             joint_present
             and chest_present
@@ -448,6 +504,10 @@ class ArmstrongRos2(Robot):
             f"policy_chunk_ready={int(policy_chunk_ready)};"
             f"action_queue_size={policy_queue_size};"
             f"expected_action_chunk_size={policy_expected_chunk_size};"
+            f"gripper_command_closed={int(gripper_command_closed)};"
+            f"gripper_contact={int(gripper_contact)};"
+            f"gripper_candidate={'none' if gripper_candidate is None else int(gripper_candidate)};"
+            f"gripper_candidate_count={gripper_candidate_count};"
             f"joint_age_s={joint_age:.3f};"
             f"chest_age_s={chest_age:.3f};"
             f"wrist_age_s={wrist_age:.3f}"
@@ -457,9 +517,14 @@ class ArmstrongRos2(Robot):
     def disconnect(self) -> None:
         if not self._connected:
             return
-        self._action_enabled = False
-        self._last_safe_joint_command = None
-        self._last_gripper_command = None
+        with self._lock:
+            self._action_enabled = False
+            self._last_safe_joint_command = None
+            self._last_gripper_command = None
+            self._gripper_filter.reset(
+                initial_closed=self._gripper_closed,
+                now=time.monotonic(),
+            )
         self._publish_stop()
         self._connected = False
         if self._executor is not None:

@@ -32,6 +32,11 @@ safe_one_arm_servo:
     feedback_timeout_seconds: 0.30
     # JAKA servo_j/edg_servo_j step_num=1 uses the 8 ms base period.
     control_rate_hz: 125.0
+    # The 8 ms SDK sender is an independent monotonic-clock thread. CPU
+    # affinity is normally available without privileges; SCHED_FIFO may need
+    # the host's realtime limits/capability and otherwise falls back safely.
+    servo_thread_cpu: 1
+    servo_thread_realtime_priority: 60
     state_rate_hz: 20.0
     # Record timer jitter continuously; exit servo mode if a live cycle is
     # delayed by more than 50 ms.

@@ -28,8 +28,8 @@ class PolicySafetyConfig:
     initial_upper: tuple[float, ...]
     max_target_error_rad: float = 0.25
     small_envelope_overshoot_rad: float = 0.03
-    gripper_open_threshold: float = 0.35
-    gripper_close_threshold: float = 0.65
+    gripper_open_threshold: float = 0.15
+    gripper_close_threshold: float = 0.85
 
     def __post_init__(self) -> None:
         for name in ("task_lower", "task_upper", "initial_lower", "initial_upper"):
@@ -48,6 +48,146 @@ class PolicySafetyConfig:
             raise ValueError("small_envelope_overshoot_rad cannot be negative")
         if not 0 <= self.gripper_open_threshold < self.gripper_close_threshold <= 1:
             raise ValueError("gripper thresholds must satisfy 0 <= open < close <= 1")
+
+
+@dataclass(frozen=True)
+class GripperTemporalConfig:
+    """Temporal hysteresis for model gripper commands.
+
+    Thresholds classify only decisive model outputs.  A state change then has
+    to remain decisive for ``confirmation_frames`` consecutive actions.  The
+    dwell and contact holds prevent adjacent policy chunks from immediately
+    undoing a close command.
+    """
+
+    open_threshold: float = 0.15
+    close_threshold: float = 0.85
+    confirmation_frames: int = 10
+    min_state_dwell_seconds: float = 2.0
+    contact_hold_seconds: float = 3.0
+
+    def __post_init__(self) -> None:
+        if not 0 <= self.open_threshold < self.close_threshold <= 1:
+            raise ValueError("gripper thresholds must satisfy 0 <= open < close <= 1")
+        if self.confirmation_frames <= 0:
+            raise ValueError("confirmation_frames must be positive")
+        if not math.isfinite(self.min_state_dwell_seconds) or self.min_state_dwell_seconds < 0:
+            raise ValueError("min_state_dwell_seconds cannot be negative")
+        if not math.isfinite(self.contact_hold_seconds) or self.contact_hold_seconds < 0:
+            raise ValueError("contact_hold_seconds cannot be negative")
+
+
+@dataclass(frozen=True)
+class GripperTemporalResult:
+    command_closed: bool
+    transitioned: bool
+    candidate_closed: bool | None
+    candidate_count: int
+    blocked_reason: str | None
+
+
+class GripperTemporalFilter:
+    """Stateful, time-aware filter for binary gripper commands."""
+
+    def __init__(
+        self,
+        config: GripperTemporalConfig,
+        *,
+        initial_closed: bool = False,
+        now: float = 0.0,
+    ) -> None:
+        self.config = config
+        self.reset(initial_closed=initial_closed, now=now)
+
+    def reset(self, *, initial_closed: bool, now: float) -> None:
+        self.command_closed = bool(initial_closed)
+        self.candidate_closed: bool | None = None
+        self.candidate_count = 0
+        self.last_transition_time = float(now)
+        self.contact_started_time: float | None = None
+        self.contact_active = False
+
+    def note_contact(self, active: bool, *, now: float) -> None:
+        active = bool(active)
+        if active and not self.contact_active:
+            self.contact_started_time = float(now)
+        elif not active:
+            self.contact_started_time = None
+        self.contact_active = active
+
+    def update(
+        self,
+        raw_value: float,
+        *,
+        now: float,
+        contact_active: bool,
+    ) -> GripperTemporalResult:
+        raw_value = float(raw_value)
+        now = float(now)
+        if not math.isfinite(raw_value) or not math.isfinite(now):
+            raise PolicySafetyError("gripper command/time contains NaN or infinity")
+        self.note_contact(contact_active, now=now)
+
+        candidate: bool | None
+        if raw_value <= self.config.open_threshold:
+            candidate = False
+        elif raw_value >= self.config.close_threshold:
+            candidate = True
+        else:
+            candidate = None
+
+        if candidate is None or candidate == self.command_closed:
+            self.candidate_closed = None
+            self.candidate_count = 0
+            return GripperTemporalResult(
+                self.command_closed, False, None, 0, None
+            )
+
+        if candidate == self.candidate_closed:
+            self.candidate_count += 1
+        else:
+            self.candidate_closed = candidate
+            self.candidate_count = 1
+
+        if self.candidate_count < self.config.confirmation_frames:
+            return GripperTemporalResult(
+                self.command_closed,
+                False,
+                self.candidate_closed,
+                self.candidate_count,
+                "confirmation",
+            )
+
+        elapsed = max(0.0, now - self.last_transition_time)
+        if elapsed < self.config.min_state_dwell_seconds:
+            return GripperTemporalResult(
+                self.command_closed,
+                False,
+                self.candidate_closed,
+                self.candidate_count,
+                "minimum_dwell",
+            )
+
+        if (
+            candidate is False
+            and self.contact_started_time is not None
+            and now - self.contact_started_time < self.config.contact_hold_seconds
+        ):
+            return GripperTemporalResult(
+                self.command_closed,
+                False,
+                self.candidate_closed,
+                self.candidate_count,
+                "contact_hold",
+            )
+
+        self.command_closed = candidate
+        self.last_transition_time = now
+        self.candidate_closed = None
+        self.candidate_count = 0
+        return GripperTemporalResult(
+            self.command_closed, True, None, 0, None
+        )
 
 
 def _finite_tuple(values: Sequence[float], expected: int, name: str) -> tuple[float, ...]:
