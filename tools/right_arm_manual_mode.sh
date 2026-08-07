@@ -69,6 +69,52 @@ wait_status_field() {
   return 1
 }
 
+wait_safety_prerequisites() {
+  local timeout_seconds="${1:-20}"
+  local deadline=$((SECONDS + timeout_seconds))
+  local status=""
+  local required=""
+  local missing=""
+  local -a required_fields=(
+    "connected=1"
+    "feedback_valid=1"
+    "robot_emergency_stop=0"
+    "robot_protective_stop=0"
+    "robot_socket_connected=1"
+    "robot_error_code=0"
+    "motion_enabled=0"
+    "servo_mode_entered=0"
+  )
+
+  echo "Waiting up to ${timeout_seconds}s for a complete right-arm safety status..."
+  while (( SECONDS < deadline )); do
+    status="$(topic_once /right_arm/safety_status 3 || true)"
+    if [[ -n "${status}" ]]; then
+      missing=""
+      for required in "${required_fields[@]}"; do
+        if ! grep -Fq "${required}" <<<"${status}"; then
+          missing="${missing}${missing:+, }${required}"
+        fi
+      done
+      if [[ -z "${missing}" ]]; then
+        printf '%s\n' "${status}"
+        echo "RIGHT_ARM_SAFETY_STATUS_READY"
+        return 0
+      fi
+    fi
+    sleep 0.20
+  done
+
+  echo "ERROR: no complete safe right-arm status arrived within ${timeout_seconds}s." >&2
+  if [[ -n "${status}" ]]; then
+    echo "Missing or unhealthy fields: ${missing}" >&2
+    printf '%s\n' "${status}" >&2
+  else
+    echo "No /right_arm/safety_status message was received." >&2
+  fi
+  return 1
+}
+
 call_set_bool() {
   local service_name="$1"
   local value="$2"
@@ -207,22 +253,7 @@ wait_for_service /right_arm/set_powered_on 20
 wait_for_service /right_arm/set_robot_enabled 20
 wait_for_service /right_arm/set_drag_enabled 20
 
-status="$(topic_once /right_arm/safety_status 4 || true)"
-printf '%s\n' "${status}"
-for required in \
-  "connected=1" \
-  "feedback_valid=1" \
-  "robot_emergency_stop=0" \
-  "robot_protective_stop=0" \
-  "robot_socket_connected=1" \
-  "robot_error_code=0" \
-  "motion_enabled=0" \
-  "servo_mode_entered=0"; do
-  if ! grep -Fq "${required}" <<<"${status}"; then
-    echo "ERROR: right-arm safety prerequisite is missing: ${required}" >&2
-    exit 6
-  fi
-done
+wait_safety_prerequisites 20 || exit 6
 
 ensure_set_bool_state /right_arm/set_powered_on true "robot_powered_on=1" 30
 ensure_set_bool_state /right_arm/set_robot_enabled true "robot_enabled=1" 30
