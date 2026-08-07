@@ -83,6 +83,7 @@ class ArmstrongRos2(Robot):
         self._completion_result = None
         self._completion_stop_published = False
         self._completion_initial_joints: tuple[float, ...] | None = None
+        self._completion_home_joints = tuple(config.completion_home_joints)
         self._rollout_end_logged = False
         self._owns_rclpy_context = False
         self._guard_config = PolicySafetyConfig(
@@ -292,6 +293,8 @@ class ArmstrongRos2(Robot):
                         "TELEMETRY_EVENT event=rollout_end "
                         "source=arm_motion_gate_closed "
                         + self._pose_comparison_fields(*endpoint)
+                        + " "
+                        + self._home_comparison_fields(endpoint[1])
                     )
                 self._node.get_logger().error(
                     "TELEMETRY_EVENT event=policy_stop "
@@ -380,6 +383,8 @@ class ArmstrongRos2(Robot):
                         "TELEMETRY_EVENT event=rollout_end "
                         "source=set_enabled_false "
                         + self._pose_comparison_fields(*endpoint)
+                        + " "
+                        + self._home_comparison_fields(endpoint[1])
                     )
                 self._node.get_logger().error(
                     "TELEMETRY_EVENT event=policy_stop "
@@ -422,7 +427,7 @@ class ArmstrongRos2(Robot):
             # transition through the temporal filter.
             self._last_gripper_command = gripper_closed
             self._completion_detector.reset(
-                joints,
+                self._completion_home_joints,
                 initial_gripper_closed=gripper_closed,
                 now=time.monotonic(),
             )
@@ -436,8 +441,11 @@ class ArmstrongRos2(Robot):
                 "TELEMETRY_EVENT event=rollout_start source=policy_gate_enabled "
                 f"initial_joints_rad={self._format_joint_values(joints)} "
                 f"initial_joints_deg={self._format_joint_values(self._to_degrees(joints))} "
+                f"home_joints_rad={self._format_joint_values(self._completion_home_joints)} "
+                f"home_joints_deg={self._format_joint_values(self._to_degrees(self._completion_home_joints))} "
                 f"departure_threshold_rad={self.config.completion_departure_threshold_rad:.6f} "
-                f"return_tolerance_rad={self.config.completion_return_tolerance_rad:.6f}"
+                f"return_tolerance_rad={self.config.completion_return_tolerance_rad:.6f} "
+                f"return_tolerance_deg={self.config.completion_return_tolerance_rad * 180.0 / math.pi:.6f}"
             )
         response.success = True
         response.message = (
@@ -539,12 +547,14 @@ class ArmstrongRos2(Robot):
                 self._node.get_logger().warn(
                     "TELEMETRY_EVENT event=task_complete "
                     "source=returned_home "
-                    f"max_start_error_rad={result.maximum_start_error_rad:.6f} "
+                    f"max_home_error_rad={result.maximum_start_error_rad:.6f} "
                     f"max_speed_rad_s={result.maximum_speed_rad_s:.6f} "
                     f"stable_seconds={result.stable_seconds:.3f} "
                     + self._pose_comparison_fields(
                         self._completion_initial_joints, joints
                     )
+                    + " "
+                    + self._home_comparison_fields(joints)
                 )
             self._publish_stop()
 
@@ -576,6 +586,19 @@ class ArmstrongRos2(Robot):
             f"actual_joints_rad={cls._format_joint_values(actual_joints)} "
             f"delta_joints_rad={cls._format_joint_values(deltas)} "
             f"delta_joints_deg={cls._format_joint_values(cls._to_degrees(deltas))}"
+        )
+
+    def _home_comparison_fields(self, actual_joints: tuple[float, ...]) -> str:
+        deltas = tuple(
+            actual - home
+            for actual, home in zip(
+                actual_joints, self._completion_home_joints, strict=True
+            )
+        )
+        return (
+            f"home_joints_rad={self._format_joint_values(self._completion_home_joints)} "
+            f"home_delta_joints_rad={self._format_joint_values(deltas)} "
+            f"home_delta_joints_deg={self._format_joint_values(self._to_degrees(deltas))}"
         )
 
     def _publish_joint_command(self, joints: tuple[float, ...]) -> None:
