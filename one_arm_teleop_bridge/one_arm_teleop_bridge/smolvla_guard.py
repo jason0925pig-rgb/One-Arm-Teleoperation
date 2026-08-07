@@ -190,6 +190,159 @@ class GripperTemporalFilter:
         )
 
 
+@dataclass(frozen=True)
+class TaskCompletionConfig:
+    """Conditions for declaring a learned rollout complete.
+
+    The policy remains responsible for returning the arm.  This detector only
+    closes the action gate after a complete grasp/release cycle and a stable
+    return near the pose captured when model control was enabled.
+    """
+
+    departure_threshold_rad: float = 0.40
+    return_tolerance_rad: float = 0.30
+    stable_duration_seconds: float = 2.0
+    minimum_episode_seconds: float = 15.0
+    maximum_stable_speed_rad_s: float = 0.05
+
+    def __post_init__(self) -> None:
+        finite_positive = (
+            "departure_threshold_rad",
+            "return_tolerance_rad",
+            "stable_duration_seconds",
+            "minimum_episode_seconds",
+            "maximum_stable_speed_rad_s",
+        )
+        for name in finite_positive:
+            value = getattr(self, name)
+            if not math.isfinite(value) or value <= 0:
+                raise ValueError(f"{name} must be finite and positive")
+        if self.departure_threshold_rad <= self.return_tolerance_rad:
+            raise ValueError(
+                "departure_threshold_rad must exceed return_tolerance_rad "
+                "to provide completion hysteresis"
+            )
+
+
+@dataclass(frozen=True)
+class TaskCompletionResult:
+    completed: bool
+    departed: bool
+    saw_close: bool
+    saw_release: bool
+    inside_return_envelope: bool
+    stable_seconds: float
+    maximum_start_error_rad: float
+    maximum_speed_rad_s: float
+
+
+class TaskCompletionDetector:
+    """Recognize leave, grasp, release, and stable-return in that order."""
+
+    def __init__(self, config: TaskCompletionConfig) -> None:
+        self.config = config
+        self.active = False
+        self.completed = False
+
+    def reset(
+        self,
+        initial_joints: Sequence[float],
+        *,
+        initial_gripper_closed: bool,
+        now: float,
+    ) -> None:
+        self.initial_joints = _finite_tuple(initial_joints, JOINT_COUNT, "initial joints")
+        self.previous_joints = self.initial_joints
+        self.previous_time = float(now)
+        self.started_time = float(now)
+        self.return_stable_since: float | None = None
+        self.departed = False
+        # A closed initial gripper must not count as the task's grasp event.
+        self.saw_close = False
+        self.saw_release = False
+        self.active = True
+        self.completed = False
+
+    def deactivate(self) -> None:
+        self.active = False
+        self.return_stable_since = None
+
+    def update(
+        self,
+        joints: Sequence[float],
+        *,
+        gripper_closed: bool,
+        now: float,
+    ) -> TaskCompletionResult:
+        if not self.active:
+            raise RuntimeError("task completion detector is not active")
+        checked = _finite_tuple(joints, JOINT_COUNT, "completion joints")
+        now = float(now)
+        if not math.isfinite(now) or now < self.previous_time:
+            raise ValueError("completion time must be finite and monotonic")
+
+        start_errors = tuple(
+            abs(value - initial)
+            for value, initial in zip(checked, self.initial_joints, strict=True)
+        )
+        maximum_start_error = max(start_errors)
+        if maximum_start_error >= self.config.departure_threshold_rad:
+            self.departed = True
+
+        if self.departed and gripper_closed:
+            self.saw_close = True
+        if self.saw_close and not gripper_closed:
+            self.saw_release = True
+
+        dt = now - self.previous_time
+        maximum_speed = 0.0
+        if dt > 0:
+            maximum_speed = max(
+                abs(value - previous) / dt
+                for value, previous in zip(checked, self.previous_joints, strict=True)
+            )
+
+        inside_return_envelope = all(
+            error <= self.config.return_tolerance_rad for error in start_errors
+        )
+        eligible = (
+            self.departed
+            and self.saw_close
+            and self.saw_release
+            and not gripper_closed
+            and now - self.started_time >= self.config.minimum_episode_seconds
+            and inside_return_envelope
+            and maximum_speed <= self.config.maximum_stable_speed_rad_s
+        )
+        if eligible:
+            if self.return_stable_since is None:
+                self.return_stable_since = now
+        else:
+            self.return_stable_since = None
+
+        stable_seconds = (
+            0.0
+            if self.return_stable_since is None
+            else max(0.0, now - self.return_stable_since)
+        )
+        if stable_seconds >= self.config.stable_duration_seconds:
+            self.completed = True
+            self.active = False
+
+        self.previous_joints = checked
+        self.previous_time = now
+        return TaskCompletionResult(
+            completed=self.completed,
+            departed=self.departed,
+            saw_close=self.saw_close,
+            saw_release=self.saw_release,
+            inside_return_envelope=inside_return_envelope,
+            stable_seconds=stable_seconds,
+            maximum_start_error_rad=maximum_start_error,
+            maximum_speed_rad_s=maximum_speed,
+        )
+
+
 def _finite_tuple(values: Sequence[float], expected: int, name: str) -> tuple[float, ...]:
     result = tuple(float(value) for value in values)
     if len(result) != expected:

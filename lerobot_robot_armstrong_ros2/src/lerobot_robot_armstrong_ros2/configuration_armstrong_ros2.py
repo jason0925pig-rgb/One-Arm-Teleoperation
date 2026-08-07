@@ -72,3 +72,12 @@ class ArmstrongRos2Config(RobotConfig):
     gripper_confirmation_frames: int = 10
     gripper_min_state_dwell_seconds: float = 2.0
     gripper_contact_hold_seconds: float = 3.0
+
+    # Learned-return completion detector.  These deliberately broad first
+    # values reflect variation in the 50 demonstrations.  The larger leave
+    # threshold and smaller return tolerance provide 0.10 rad hysteresis.
+    completion_departure_threshold_rad: float = 0.40
+    completion_return_tolerance_rad: float = 0.30
+    completion_stable_duration_seconds: float = 2.0
+    completion_minimum_episode_seconds: float = 15.0
+    completion_maximum_stable_speed_rad_s: float = 0.05

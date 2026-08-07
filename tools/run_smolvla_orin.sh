@@ -12,6 +12,8 @@ STOPPING=0
 STOP_SOURCE="normal_exit"
 CLIENT_LOG_STREAM_PID=""
 SERVER_LOG_STREAM_PID=""
+COMPLETION_MONITOR_PID=""
+COMPLETION_MONITOR_LOG="${RUNTIME_DIR}/completion_monitor.log"
 
 mkdir -p "${RUNTIME_DIR}"
 
@@ -75,6 +77,7 @@ cleanup() {
   stop_managed "${SERVER_PID_FILE}"
   [[ -z "${CLIENT_LOG_STREAM_PID}" ]] || kill "${CLIENT_LOG_STREAM_PID}" 2>/dev/null || true
   [[ -z "${SERVER_LOG_STREAM_PID}" ]] || kill "${SERVER_LOG_STREAM_PID}" 2>/dev/null || true
+  [[ -z "${COMPLETION_MONITOR_PID}" ]] || kill "${COMPLETION_MONITOR_PID}" 2>/dev/null || true
   echo "SMOLVLA_ALL_STOPPED_AND_POWERED_OFF"
   if (( exit_code != 0 && exit_code != 130 )); then
     echo "--- policy client log (last 40 lines) ---" >&2
@@ -268,11 +271,36 @@ read -r -p "Type MOVE to start model control: " answer
 echo
 echo "SMOLVLA_RUNNING"
 echo "机器人正在由模型控制。按 Ctrl+C，或输入 STOP 并回车，即刻执行有序停止、去使能和下电。"
-while read -r answer; do
-  if [[ "${answer}" == "STOP" ]]; then
-    STOP_SOURCE="operator_typed_stop"
-    emit_launcher_event "event=operator_stop source=typed_STOP"
-    break
+# The adapter closes its action gate and publishes STOP before exposing
+# task_completed=1. This monitor turns that safe state into a normal launcher
+# exit; Ctrl+C and typed STOP remain available throughout the rollout.
+: >"${COMPLETION_MONITOR_LOG}"
+python3 "${PROJECT_ROOT}/tools/wait_for_string_topic.py" /smolvla/status \
+  --timeout 86400 \
+  --contains task_completed=1 >"${COMPLETION_MONITOR_LOG}" 2>&1 &
+COMPLETION_MONITOR_PID=$!
+
+while true; do
+  if read -r -t 0.5 answer; then
+    if [[ "${answer}" == "STOP" ]]; then
+      STOP_SOURCE="operator_typed_stop"
+      emit_launcher_event "event=operator_stop source=typed_STOP"
+      break
+    fi
+    echo "Type STOP then Enter, or press Ctrl+C, to stop."
   fi
-  echo "Type STOP then Enter, or press Ctrl+C, to stop."
+  if [[ -n "${COMPLETION_MONITOR_PID}" ]] && ! kill -0 "${COMPLETION_MONITOR_PID}" 2>/dev/null; then
+    if wait "${COMPLETION_MONITOR_PID}"; then
+      cat "${COMPLETION_MONITOR_LOG}"
+      COMPLETION_MONITOR_PID=""
+      STOP_SOURCE="task_completed_returned_home"
+      emit_launcher_event "event=task_completed source=stable_return_home"
+      echo "TASK_COMPLETED_RETURNED_HOME"
+      echo "The grasp/release cycle completed and all seven joints returned near the captured start pose."
+      break
+    fi
+    echo "WARNING: automatic-completion monitor stopped unexpectedly; manual STOP remains available." >&2
+    cat "${COMPLETION_MONITOR_LOG}" >&2 || true
+    COMPLETION_MONITOR_PID=""
+  fi
 done

@@ -6,6 +6,8 @@ from one_arm_teleop_bridge.smolvla_guard import (
     GripperTemporalFilter,
     PolicySafetyConfig,
     PolicySafetyError,
+    TaskCompletionConfig,
+    TaskCompletionDetector,
     guard_policy_action,
     validate_initial_pose,
 )
@@ -95,6 +97,54 @@ class SmolVLAGuardTests(unittest.TestCase):
         opened = filter_.update(0.0, now=3.6, contact_active=True)
         self.assertTrue(opened.transitioned)
         self.assertFalse(opened.command_closed)
+
+    def test_completion_requires_depart_grasp_release_and_stable_return(self):
+        detector = TaskCompletionDetector(
+            TaskCompletionConfig(
+                departure_threshold_rad=0.40,
+                return_tolerance_rad=0.30,
+                stable_duration_seconds=2.0,
+                minimum_episode_seconds=3.0,
+                maximum_stable_speed_rad_s=0.05,
+            )
+        )
+        detector.reset((0.0,) * 7, initial_gripper_closed=False, now=0.0)
+        self.assertFalse(
+            detector.update((0.0,) * 7, gripper_closed=False, now=1.0).completed
+        )
+        departed = detector.update(
+            (0.41,) + (0.0,) * 6, gripper_closed=False, now=2.0
+        )
+        self.assertTrue(departed.departed)
+        detector.update((0.41,) + (0.0,) * 6, gripper_closed=True, now=3.0)
+        detector.update((0.20,) + (0.0,) * 6, gripper_closed=False, now=4.0)
+        self.assertFalse(
+            detector.update((0.20,) + (0.0,) * 6, gripper_closed=False, now=5.0).completed
+        )
+        self.assertFalse(
+            detector.update((0.20,) + (0.0,) * 6, gripper_closed=False, now=6.0).completed
+        )
+        completed = detector.update(
+            (0.20,) + (0.0,) * 6, gripper_closed=False, now=7.0
+        )
+        self.assertTrue(completed.completed)
+
+    def test_completion_does_not_trigger_without_a_grasp_cycle(self):
+        detector = TaskCompletionDetector(
+            TaskCompletionConfig(
+                departure_threshold_rad=0.40,
+                return_tolerance_rad=0.30,
+                stable_duration_seconds=1.0,
+                minimum_episode_seconds=1.0,
+                maximum_stable_speed_rad_s=0.05,
+            )
+        )
+        detector.reset((0.0,) * 7, initial_gripper_closed=False, now=0.0)
+        detector.update((0.50,) + (0.0,) * 6, gripper_closed=False, now=1.0)
+        detector.update((0.20,) + (0.0,) * 6, gripper_closed=False, now=2.0)
+        result = detector.update((0.20,) + (0.0,) * 6, gripper_closed=False, now=4.0)
+        self.assertFalse(result.completed)
+        self.assertFalse(result.saw_close)
 
 
 if __name__ == "__main__":

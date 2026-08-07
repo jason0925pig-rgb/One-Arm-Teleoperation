@@ -21,6 +21,8 @@ from one_arm_teleop_bridge.smolvla_guard import (
     GripperTemporalFilter,
     PolicySafetyConfig,
     PolicySafetyError,
+    TaskCompletionConfig,
+    TaskCompletionDetector,
     guard_policy_action,
     validate_initial_pose,
 )
@@ -77,6 +79,8 @@ class ArmstrongRos2(Robot):
         self._policy_queue_size = 0
         self._policy_expected_chunk_size = 0
         self._policy_chunk_ready = False
+        self._completion_result = None
+        self._completion_stop_published = False
         self._owns_rclpy_context = False
         self._guard_config = PolicySafetyConfig(
             task_lower=tuple(config.task_lower),
@@ -98,6 +102,15 @@ class ArmstrongRos2(Robot):
             ),
             initial_closed=False,
             now=time.monotonic(),
+        )
+        self._completion_detector = TaskCompletionDetector(
+            TaskCompletionConfig(
+                departure_threshold_rad=config.completion_departure_threshold_rad,
+                return_tolerance_rad=config.completion_return_tolerance_rad,
+                stable_duration_seconds=config.completion_stable_duration_seconds,
+                minimum_episode_seconds=config.completion_minimum_episode_seconds,
+                maximum_stable_speed_rad_s=config.completion_maximum_stable_speed_rad_s,
+            )
         )
 
     @property
@@ -127,6 +140,14 @@ class ArmstrongRos2(Robot):
     @property
     def action_enabled(self) -> bool:
         return self._action_enabled
+
+    @property
+    def task_completed(self) -> bool:
+        with self._lock:
+            return bool(
+                self._completion_result is not None
+                and self._completion_result.completed
+            )
 
     def update_policy_queue_state(
         self,
@@ -310,6 +331,7 @@ class ArmstrongRos2(Robot):
         if not self._connected:
             raise RuntimeError("robot adapter is not connected")
         joints, gripper_closed, chest, wrist = self._snapshot()
+        self._update_task_completion(joints, gripper_closed)
         return {
             **dict(zip(JOINT_NAMES, joints, strict=True)),
             GRIPPER_NAME: float(gripper_closed),
@@ -327,6 +349,9 @@ class ArmstrongRos2(Robot):
                     initial_closed=self._gripper_closed,
                     now=time.monotonic(),
                 )
+                self._completion_detector.deactivate()
+                self._completion_result = None
+                self._completion_stop_published = False
             self._publish_stop()
             if self._node is not None:
                 self._node.get_logger().error(
@@ -369,6 +394,13 @@ class ArmstrongRos2(Robot):
             # re-publish a binary command until the model earns a confirmed
             # transition through the temporal filter.
             self._last_gripper_command = gripper_closed
+            self._completion_detector.reset(
+                joints,
+                initial_gripper_closed=gripper_closed,
+                now=time.monotonic(),
+            )
+            self._completion_result = None
+            self._completion_stop_published = False
             self._action_enabled = True
         response.success = True
         response.message = (
@@ -443,6 +475,38 @@ class ArmstrongRos2(Robot):
             GRIPPER_NAME: float(guarded_gripper),
         }
 
+    def _update_task_completion(
+        self,
+        joints: tuple[float, ...],
+        gripper_closed: bool,
+    ) -> None:
+        should_stop = False
+        result = None
+        with self._lock:
+            if self._action_enabled and self._completion_detector.active:
+                result = self._completion_detector.update(
+                    joints,
+                    gripper_closed=gripper_closed,
+                    now=time.monotonic(),
+                )
+                self._completion_result = result
+                if result.completed and not self._completion_stop_published:
+                    self._completion_stop_published = True
+                    self._action_enabled = False
+                    self._last_safe_joint_command = None
+                    self._last_gripper_command = None
+                    should_stop = True
+        if should_stop:
+            if self._node is not None:
+                self._node.get_logger().warn(
+                    "TELEMETRY_EVENT event=task_complete "
+                    "source=stable_return_home "
+                    f"max_start_error_rad={result.maximum_start_error_rad:.6f} "
+                    f"max_speed_rad_s={result.maximum_speed_rad_s:.6f} "
+                    f"stable_seconds={result.stable_seconds:.3f}"
+                )
+            self._publish_stop()
+
     def _publish_joint_command(self, joints: tuple[float, ...]) -> None:
         message = JointState()
         message.header.stamp = self._node.get_clock().now().to_msg()
@@ -487,6 +551,16 @@ class ArmstrongRos2(Robot):
             gripper_candidate = self._gripper_filter.candidate_closed
             gripper_candidate_count = self._gripper_filter.candidate_count
             gripper_command_closed = self._gripper_filter.command_closed
+            completion_result = self._completion_result
+            completion_active = self._completion_detector.active
+        task_completed = bool(completion_result and completion_result.completed)
+        completion_departed = bool(completion_result and completion_result.departed)
+        completion_saw_close = bool(completion_result and completion_result.saw_close)
+        completion_saw_release = bool(completion_result and completion_result.saw_release)
+        completion_home = bool(completion_result and completion_result.inside_return_envelope)
+        completion_stable_seconds = (
+            0.0 if completion_result is None else completion_result.stable_seconds
+        )
         observation_ready = (
             joint_present
             and chest_present
@@ -508,6 +582,13 @@ class ArmstrongRos2(Robot):
             f"gripper_contact={int(gripper_contact)};"
             f"gripper_candidate={'none' if gripper_candidate is None else int(gripper_candidate)};"
             f"gripper_candidate_count={gripper_candidate_count};"
+            f"completion_active={int(completion_active)};"
+            f"completion_departed={int(completion_departed)};"
+            f"completion_saw_close={int(completion_saw_close)};"
+            f"completion_saw_release={int(completion_saw_release)};"
+            f"completion_home={int(completion_home)};"
+            f"completion_stable_s={completion_stable_seconds:.3f};"
+            f"task_completed={int(task_completed)};"
             f"joint_age_s={joint_age:.3f};"
             f"chest_age_s={chest_age:.3f};"
             f"wrist_age_s={wrist_age:.3f}"
@@ -525,6 +606,7 @@ class ArmstrongRos2(Robot):
                 initial_closed=self._gripper_closed,
                 now=time.monotonic(),
             )
+            self._completion_detector.deactivate()
         self._publish_stop()
         self._connected = False
         if self._executor is not None:
