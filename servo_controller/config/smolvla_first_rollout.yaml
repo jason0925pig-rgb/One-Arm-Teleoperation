@@ -18,14 +18,14 @@ safe_one_arm_servo:
     # Autonomous inference restores fail-stop watchdogs.  This is intentionally
     # different from the relaxed human-attended data-collection profile.
     # Orin inference currently takes about 1.5-1.7 s per 50-action chunk.
-    # The ROS client refreshes the last guarded target at 25 Hz between
+    # The ROS client refreshes the last guarded target at 15 Hz between
     # chunks; five seconds still stops a dead client without treating normal
     # inference or a short controller-status pause as a disconnect.
     command_timeout_seconds: 5.0
     feedback_timeout_seconds: 5.0
     stop_on_command_timeout: true
     stop_on_feedback_timeout: true
-    # The policy publishes new targets at 25 Hz, while this lower-level loop
+    # The policy publishes new targets at 15 Hz, while this lower-level loop
     # slews between them at the JAKA SDK's proven 8 ms cadence.  The 40 ms
     # step_num=5 overload returned ERR_INVALID_HANDLER during attended tests,
     # so keep the established step_num=1 path until the vendor explains it.
@@ -47,7 +47,7 @@ safe_one_arm_servo:
     # Joint-position limits, the policy target-error guard, the acceleration
     # ramp below, SDK/controller limits and the physical E-stop remain active.
     max_velocity_rad_s: [100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0]
-    max_acceleration_rad_s2: [0.30, 0.30, 0.30, 0.30, 0.30, 0.30, 0.30]
+    max_acceleration_rad_s2: [0.50, 0.50, 0.50, 0.50, 0.50, 0.50, 0.50]
 
 safe_gripper_controller:
   ros__parameters:
