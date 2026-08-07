@@ -146,6 +146,27 @@ class SmolVLAGuardTests(unittest.TestCase):
         self.assertFalse(result.completed)
         self.assertFalse(result.saw_close)
 
+    def test_completion_can_fire_immediately_without_low_speed_dwell(self):
+        detector = TaskCompletionDetector(
+            TaskCompletionConfig(
+                departure_threshold_rad=0.40,
+                return_tolerance_rad=0.30,
+                stable_duration_seconds=0.0,
+                minimum_episode_seconds=1.0,
+                maximum_stable_speed_rad_s=0.05,
+            )
+        )
+        detector.reset((0.0,) * 7, initial_gripper_closed=False, now=0.0)
+        detector.update((0.50,) + (0.0,) * 6, gripper_closed=False, now=1.0)
+        detector.update((0.50,) + (0.0,) * 6, gripper_closed=True, now=2.0)
+        # The 0.25 rad movement in 0.1 seconds is deliberately much faster
+        # than the configured speed threshold. With dwell disabled, entering
+        # the return envelope after release completes immediately.
+        result = detector.update(
+            (0.25,) + (0.0,) * 6, gripper_closed=False, now=2.1
+        )
+        self.assertTrue(result.completed)
+
 
 if __name__ == "__main__":
     unittest.main()

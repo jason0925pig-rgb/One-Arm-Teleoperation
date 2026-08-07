@@ -296,7 +296,7 @@ while true; do
       cat "${COMPLETION_MONITOR_LOG}"
       COMPLETION_MONITOR_PID=""
       STOP_SOURCE="task_completed_returned_home"
-      emit_launcher_event "event=task_completed source=stable_return_home"
+      emit_launcher_event "event=task_completed source=returned_home"
       echo "TASK_COMPLETED_RETURNED_HOME"
       echo "The grasp/release cycle completed and all seven joints returned near the captured start pose."
       break

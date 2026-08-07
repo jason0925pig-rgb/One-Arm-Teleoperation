@@ -195,13 +195,14 @@ class TaskCompletionConfig:
     """Conditions for declaring a learned rollout complete.
 
     The policy remains responsible for returning the arm.  This detector only
-    closes the action gate after a complete grasp/release cycle and a stable
-    return near the pose captured when model control was enabled.
+    closes the action gate after a complete grasp/release cycle and a return
+    near the pose captured when model control was enabled. A nonzero stable
+    duration can optionally require a low-speed dwell.
     """
 
     departure_threshold_rad: float = 0.40
     return_tolerance_rad: float = 0.30
-    stable_duration_seconds: float = 2.0
+    stable_duration_seconds: float = 0.0
     minimum_episode_seconds: float = 15.0
     maximum_stable_speed_rad_s: float = 0.05
 
@@ -209,7 +210,6 @@ class TaskCompletionConfig:
         finite_positive = (
             "departure_threshold_rad",
             "return_tolerance_rad",
-            "stable_duration_seconds",
             "minimum_episode_seconds",
             "maximum_stable_speed_rad_s",
         )
@@ -217,6 +217,11 @@ class TaskCompletionConfig:
             value = getattr(self, name)
             if not math.isfinite(value) or value <= 0:
                 raise ValueError(f"{name} must be finite and positive")
+        if (
+            not math.isfinite(self.stable_duration_seconds)
+            or self.stable_duration_seconds < 0
+        ):
+            raise ValueError("stable_duration_seconds must be finite and nonnegative")
         if self.departure_threshold_rad <= self.return_tolerance_rad:
             raise ValueError(
                 "departure_threshold_rad must exceed return_tolerance_rad "
@@ -305,6 +310,7 @@ class TaskCompletionDetector:
         inside_return_envelope = all(
             error <= self.config.return_tolerance_rad for error in start_errors
         )
+        stability_disabled = self.config.stable_duration_seconds == 0
         eligible = (
             self.departed
             and self.saw_close
@@ -312,7 +318,10 @@ class TaskCompletionDetector:
             and not gripper_closed
             and now - self.started_time >= self.config.minimum_episode_seconds
             and inside_return_envelope
-            and maximum_speed <= self.config.maximum_stable_speed_rad_s
+            and (
+                stability_disabled
+                or maximum_speed <= self.config.maximum_stable_speed_rad_s
+            )
         )
         if eligible:
             if self.return_stable_since is None:
@@ -325,7 +334,7 @@ class TaskCompletionDetector:
             if self.return_stable_since is None
             else max(0.0, now - self.return_stable_since)
         )
-        if stable_seconds >= self.config.stable_duration_seconds:
+        if eligible and stable_seconds >= self.config.stable_duration_seconds:
             self.completed = True
             self.active = False
 

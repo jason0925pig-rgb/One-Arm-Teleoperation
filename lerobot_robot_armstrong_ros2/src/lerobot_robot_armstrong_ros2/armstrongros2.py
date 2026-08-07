@@ -538,7 +538,7 @@ class ArmstrongRos2(Robot):
             if self._node is not None:
                 self._node.get_logger().warn(
                     "TELEMETRY_EVENT event=task_complete "
-                    "source=stable_return_home "
+                    "source=returned_home "
                     f"max_start_error_rad={result.maximum_start_error_rad:.6f} "
                     f"max_speed_rad_s={result.maximum_speed_rad_s:.6f} "
                     f"stable_seconds={result.stable_seconds:.3f} "

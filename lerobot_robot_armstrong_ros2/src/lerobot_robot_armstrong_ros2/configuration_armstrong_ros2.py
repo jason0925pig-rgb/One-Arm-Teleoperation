@@ -78,6 +78,8 @@ class ArmstrongRos2Config(RobotConfig):
     # threshold and smaller return tolerance provide 0.10 rad hysteresis.
     completion_departure_threshold_rad: float = 0.40
     completion_return_tolerance_rad: float = 0.30
-    completion_stable_duration_seconds: float = 2.0
+    # Zero disables the low-speed dwell: completion fires immediately after
+    # the completed grasp/release cycle returns inside the home envelope.
+    completion_stable_duration_seconds: float = 0.0
     completion_minimum_episode_seconds: float = 15.0
     completion_maximum_stable_speed_rad_s: float = 0.05
