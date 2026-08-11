@@ -5,6 +5,8 @@
 > SmolVLA baseline, model rollout, critic, and QGF work now lives in
 > [SmolVLA-with-QGF](https://github.com/jason0925pig-rgb/SmolVLA-with-QGF).
 
+公司操作文档：[飞书｜单臂遥操作操作手册](https://kd8ybnear5.feishu.cn/wiki/YlmYwqS08iMt9AkcWATcLULvn7f?from=from_copylink)
+
 Windows ZLink2 主臂到 Armstrong 右臂的安全 ROS2 遥操作项目。
 
 当前确定的硬件与方案：
