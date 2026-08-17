@@ -56,14 +56,14 @@ safe_gripper_controller:
     speed: 75
     # Default / closing grip force. Keep opening force separate below because
     # the CTAG2F120 needs more force to overcome its own mechanism friction.
-    force: 10
+    force: 25
     # Opening must overcome the CTAG2F120 mechanism's own friction. The
     # machine's proven Terminal-3 initialization uses 100% speed / 60% force.
     # Closing remains limited so an object is not gripped with that force.
     open_speed: 100
     open_force: 60
     closed_speed: 75
-    closed_force: 10
+    closed_force: 25
     allowed_alarm_mask: 32
     movement_timeout_seconds: 30.0
     stop_on_movement_timeout: false
