@@ -20,7 +20,11 @@ udp_leader_bridge:
     leader_period_pulses: 2000
     leader_min_valid_pulse: 500
     leader_max_valid_pulse: 2500
-    leader_joint_dropout_hold_seconds: 10.0
+    # Leader ID 2 (joint_3) occasionally reports a transient zero pulse even
+    # though the serial scan still completes. Hold only that joint at its last
+    # valid position for up to twenty seconds instead of stopping the whole arm
+    # after ten seconds. A genuinely persistent fault still produces STOP.
+    leader_joint_dropout_hold_seconds: 20.0
     max_leader_step_pulses: 950.0
 
     # Light smoothing: reject one-frame spikes, then use a responsive low-pass

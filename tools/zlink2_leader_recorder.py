@@ -848,6 +848,22 @@ def record_session(
                         f"{label}={sample.pulses.get(ids_by_label[label], '-')}"
                         for label in labels
                     )
+                    invalid_joint_samples = [
+                        f"{label}={sample.pulses.get(ids_by_label[label], '-')}"
+                        for label in labels
+                        if label != "gripper"
+                        and (
+                            ids_by_label[label] not in sample.pulses
+                            or not 500
+                            <= int(sample.pulses[ids_by_label[label]])
+                            <= 2500
+                        )
+                    ]
+                    encoder_alert = (
+                        "none"
+                        if not invalid_joint_samples
+                        else ",".join(invalid_joint_samples)
+                    )
                     if not args.deadman:
                         teleop_state = "RECORD_ONLY"
                     else:
@@ -862,7 +878,8 @@ def record_session(
                             f"rate={actual_rate:.2f}Hz "
                             f"complete={complete_frames}/{sequence} "
                             f"teleop={teleop_state} | {pulse_summary} "
-                            f"gripper_state={row.get('gripper_state', '-')}",
+                            f"gripper_state={row.get('gripper_state', '-')} "
+                            f"encoder_alert={encoder_alert}",
                             flush=True,
                         )
                     last_status = now
