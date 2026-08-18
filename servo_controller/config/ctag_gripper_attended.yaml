@@ -16,7 +16,7 @@ safe_gripper_controller:
     open_position: 6000
     closed_position: 12000
     speed: 50
-    force: 15
+    force: 75
 
     # Accept only the persistent 0x20 bit observed both before and after the
     # successful legacy trial. Every other alarm bit remains a hard stop.
