@@ -54,12 +54,11 @@ safe_gripper_controller:
     open_position: 2000
     closed_position: 12000
     speed: 75
-    # Default / closing grip force. Keep opening force separate below because
-    # the CTAG2F120 needs more force to overcome its own mechanism friction.
+    # Use the same attended grip force for default, opening and closing
+    # commands so every teleoperation entry point has identical behaviour.
     force: 75
-    # Opening must overcome the CTAG2F120 mechanism's own friction. The
-    # machine's proven Terminal-3 initialization uses 100% speed / 60% force.
-    # Closing remains limited so an object is not gripped with that force.
+    # Keep direction-specific fields explicit even though they intentionally
+    # use the same 75% force as the default above.
     open_speed: 100
     open_force: 75
     closed_speed: 75
