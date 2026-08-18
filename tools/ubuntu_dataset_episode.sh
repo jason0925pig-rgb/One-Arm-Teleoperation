@@ -763,6 +763,11 @@ case "${ACTION}" in
     }
     start_recording "$2" "$3" "${4:-}"
     ;;
+  record-stop)
+    # Stop only the current bag supervisor.  Keep camera and preview processes
+    # alive so a multi-round collector can immediately start its next episode.
+    stop_recorder
+    ;;
   stop)
     stop_all
     ;;
@@ -784,7 +789,7 @@ case "${ACTION}" in
     show_status
     ;;
   *)
-    echo "Usage: $0 {preflight|start|record-start|stop|finalize|discard|status}" >&2
+    echo "Usage: $0 {preflight|start|record-start|record-stop|stop|finalize|discard|status}" >&2
     exit 2
     ;;
 esac

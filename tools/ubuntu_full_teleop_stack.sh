@@ -589,6 +589,71 @@ arm_stack() {
   echo "The robot is servo-ready but receives no motion command until Space."
 }
 
+# End one attended data-collection round without taking down the long-lived
+# stack.  This deliberately leaves controller power, robot enable, gripper
+# enable, cameras and ROS nodes alone.  It is used by the LingBot-VA collector
+# between demonstrations so the next round only has to capture a new leader
+# baseline and re-enter servo mode.
+round_stop() {
+  ensure_components_running
+  echo "ROUND_STOPPING_MAPPING_AND_SERVO_ONLY"
+  if ! call_set_bool /teleop/set_enabled false; then
+    echo "ERROR: failed to close the teleoperation mapping gate." >&2
+    return 1
+  fi
+  if ! call_set_bool /right_arm/set_motion_enabled false; then
+    echo "ERROR: failed to exit robot servo mode." >&2
+    return 1
+  fi
+  wait_status_fields 10 \
+    "motion_enabled=0" \
+    "robot_error_code=0" \
+    "robot_emergency_stop=0" \
+    "robot_protective_stop=0"
+  echo "ROUND_STOPPED_SERVO_EXITED_POWER_AND_ENABLE_RETAINED"
+}
+
+# Re-arm a subsequent collection round.  The first round uses arm_stack(),
+# which performs power-on and robot-enable.  Later rounds must never repeat
+# those requests: they only accept a fresh, inactive leader preview, reopen
+# the mapper/gripper gates, command a known-open gripper start state, and enter
+# servo mode again.
+round_arm_stack() {
+  ensure_components_running
+  if ! wait_for_leader_preview; then
+    echo "ERROR: new round was not armed because fresh leader preview was not accepted." >&2
+    return 1
+  fi
+  verify_robot_safe_to_arm
+
+  local status
+  status="$(topic_once /right_arm/safety_status 4 || true)"
+  if ! grep -Fq "robot_powered_on=1" <<<"${status}" ||
+     ! grep -Fq "robot_enabled=1" <<<"${status}"; then
+    echo "ERROR: next-round arming requires the robot to remain powered and enabled." >&2
+    return 1
+  fi
+
+  if ! call_set_bool /teleop/set_enabled true ||
+     ! call_set_bool /right_arm/set_gripper_enabled true ||
+     ! initialize_gripper_open ||
+     ! call_set_bool /right_arm/set_motion_enabled true ||
+     ! wait_status_field "motion_enabled=1" 10; then
+    # Do not power off here.  The caller may either retry after inspecting the
+    # physical robot or choose the full ordered stop action.
+    try_set_bool /teleop/set_enabled false || true
+    try_set_bool /right_arm/set_motion_enabled false || true
+    echo "ERROR: next-round servo arming failed; power/enable were retained." >&2
+    return 1
+  fi
+
+  sleep 1
+  ensure_components_running
+  wait_attended_servo_ready 10
+  echo "ROUND_TELEOP_READY"
+  echo "The robot is servo-ready for the next round; motion still waits for Windows Space."
+}
+
 stop_stack() {
   local shutdown_failed=0
   local process_stop_failed=0
@@ -630,6 +695,12 @@ case "${ACTION}" in
   arm)
     arm_stack
     ;;
+  round-arm)
+    round_arm_stack
+    ;;
+  round-stop)
+    round_stop
+    ;;
   stop)
     stop_stack
     ;;
@@ -641,7 +712,7 @@ case "${ACTION}" in
     echo "PREFLIGHT_OK"
     ;;
   *)
-    echo "Usage: $0 {start|arm|stop|status|preflight} [expected_windows_source_ip]" >&2
+    echo "Usage: $0 {start|arm|round-arm|round-stop|stop|status|preflight} [expected_windows_source_ip]" >&2
     exit 2
     ;;
 esac
