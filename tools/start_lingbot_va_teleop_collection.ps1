@@ -308,6 +308,10 @@ function Start-LeaderSender {
         "--udp-target", $UbuntuUdpTarget,
         "--udp-bind-host", $windowsSourceIp,
         "--max-consecutive-incomplete", "0",
+        # Enter captures this round's absolute-offset baseline.  A just-opened
+        # USB serial port can need longer than the recorder default for all
+        # eight PRAD replies to settle; retain the strict 8/8 requirement.
+        "--baseline-retry-seconds", "20",
         "--deadman",
         "--activation-file", $script:ReadyFile,
         "--session-path-file", $script:SenderPathFile,
