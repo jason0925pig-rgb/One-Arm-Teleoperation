@@ -1091,6 +1091,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="optional recording duration in seconds; otherwise stop with Ctrl+C",
     )
     parser.add_argument("--timeout", type=float, default=0.03)
+    parser.add_argument(
+        "--startup-retry-seconds",
+        type=float,
+        default=8.0,
+        help=(
+            "bounded read-only PRAD retry time after opening serial before "
+            "requiring all eight servo IDs (default: 8)"
+        ),
+    )
     parser.add_argument("--baseline-samples", type=int, default=5)
     parser.add_argument(
         "--baseline-retry-seconds",
@@ -1138,6 +1147,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("--rate-hz must be between 0.5 and 100")
     if args.duration is not None and args.duration <= 0:
         raise SystemExit("--duration must be positive")
+    if not 0.0 <= args.startup_retry_seconds <= 30.0:
+        raise SystemExit("--startup-retry-seconds must be between 0 and 30")
     if not 0.005 <= args.timeout <= 1.0:
         raise SystemExit("--timeout must be between 0.005 and 1.0 seconds")
     if not 1 <= args.baseline_samples <= 101:
@@ -1156,6 +1167,44 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("--udp-bind-host requires --udp-target")
     if args.activation_file is not None and not args.deadman:
         raise SystemExit("--activation-file requires --deadman")
+
+
+def complete_startup_probe(
+    port: serial.Serial,
+    servo_ids: tuple[int, ...],
+    timeout: float,
+    retry_seconds: float,
+) -> zlink.PositionSample:
+    """Return one complete, read-only ZLink2 scan or raise a useful error.
+
+    A fresh sender window opens the COM port for every LingBot collection
+    round.  The first scan after reopening USB serial can occasionally miss
+    replies while all joints are still electrically present.  Retry only PRAD
+    reads for a short bounded interval; never merge partial scans or start
+    recording until one scan contains all expected IDs.
+    """
+    deadline = time.monotonic() + retry_seconds
+    attempt = 0
+    missing: list[int] = list(servo_ids)
+    while True:
+        attempt += 1
+        probe = zlink.scan_positions(port, servo_ids, timeout)
+        missing = [servo_id for servo_id in servo_ids if servo_id not in probe.pulses]
+        if not missing:
+            if attempt > 1:
+                print(f"Startup check recovered after {attempt} read-only scans.")
+            return probe
+        if time.monotonic() >= deadline:
+            raise RuntimeError(
+                "startup check failed after "
+                f"{attempt} read-only scan(s); no reply from servo IDs {missing}"
+            )
+        print(
+            f"Startup scan {attempt} incomplete; missing servo IDs {missing}. "
+            "Retrying read-only PRAD query...",
+            flush=True,
+        )
+        time.sleep(0.15)
 
 
 def main() -> int:
@@ -1195,20 +1244,12 @@ def main() -> int:
                     args.timeout,
                 )
 
-            probe = zlink.scan_positions(
+            probe = complete_startup_probe(
                 port,
                 tuple(ids_by_label[label] for label in labels),
                 args.timeout,
+                args.startup_retry_seconds,
             )
-            missing = [
-                ids_by_label[label]
-                for label in labels
-                if ids_by_label[label] not in probe.pulses
-            ]
-            if missing:
-                raise RuntimeError(
-                    f"startup check failed; no reply from servo IDs {missing}"
-                )
             print(f"Startup check passed: {len(probe.pulses)}/8 IDs replied.")
             if args.probe_only:
                 print(
