@@ -73,6 +73,9 @@ Windows 不能每 8 ms 产生一套新的八电机数据：115200 波特率下�
 
 严格按照 [FAST_START.md](FAST_START.md) 的暂停点执行。首次操作顺序是：
 
+新电脑的网线、静态 IP、SSH 私钥、多网口、交换机与 4090 网络说明见
+[新 Armstrong Orin 有线网络、SSH 密钥与多网口基础指南](docs/NEW_ORIN_WIRED_NETWORK_AND_SSH_GUIDE.md)。
+
 1. Windows 本地 CSV 采集；
 2. GitHub 克隆到 Ubuntu；
 3. Ubuntu 只接收并打印 UDP；
