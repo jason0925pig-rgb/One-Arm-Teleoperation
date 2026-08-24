@@ -15,693 +15,74 @@ param(
     [string]$UbuntuWristSerial = "",
     [string]$UbuntuPrimaryCameraRole = "",
     [string]$UbuntuGripperDevice = "",
-    [ValidateRange(1024, 65535)]
-    [int]$CameraPreviewPort = 8088,
-    [switch]$NoCameraPreview,
     [string]$SshIdentityFile = "$env:USERPROFILE\.ssh\one_arm_teleop_ed25519",
-    [ValidateRange(1.0, 100.0)]
-    # Eight sequential PRAD transactions sustain about 15-17 complete scans
-    # per second on this ZLink2 bus. Requesting 100 Hz leaves no recovery idle
-    # time and can make several downstream servo IDs disappear mid-session.
+    [ValidateRange(1.0, 30.0)]
     [double]$RateHz = 15.0,
-    [string]$SessionName = "full_teleop",
     [string]$Task = "",
     [string]$Operator = "Lucky",
-    [string]$DatasetRepoId = "local/onearm_tele"
+    [string]$DatasetRepoId = "local/onearm_tele",
+    [ValidateRange(1024, 65535)]
+    [int]$CameraPreviewPort = 8088,
+    [switch]$NoCameraPreview
 )
+
+# SmolVLA/LeRobot attended demonstration entry point.
+#
+# This intentionally delegates lifecycle handling to the verified persistent
+# collector used by the LingBot source-data path. The data contract remains
+# the SmolVLA contract: One-Arm's ubuntu_dataset_episode.sh writes the normal
+# dual-camera ROS bag and exports the standard LeRobot episode on save.
+#
+# Per round: STOP -> mapping off + JAKA servo off only.
+# Between rounds: robot power, robot enable, camera processes and ROS nodes
+# stay alive. Q performs the only full disable/power-off cleanup.
 
 $ErrorActionPreference = "Stop"
 
-$profileDefaults = if ($DeploymentProfile -eq "new-humble") {
-    @{
-        UbuntuHost = "nvidia@192.168.2.170"
-        UbuntuProject = "/home/nvidia/work/telop/One-Arm-Teleoperation"
-        UbuntuUdpTarget = "192.168.2.170:5005"
-        RequiredWindowsSourceIp = "192.168.2.130"
-        UbuntuRosDistro = "humble"
-        # Use the Humble-packaged driver.  The custom camera_336l overlay was
-        # built against OpenCV 4.8 while Humble image_transport uses 4.5; the
-        # mixed ABI can crash a camera container when a viewer subscribes.
-        UbuntuOrbbecSetup = "/opt/ros/humble/setup.bash"
-        UbuntuLerobotPython = "/home/nvidia/work/telop/.venvs/onearm-lerobot/bin/python"
-        UbuntuDatasetDataRoot = "/home/nvidia/work/telop/onearm_Tele"
-        UbuntuHeadSerial = "CP8284100034"
-        UbuntuWristSerial = "CPCD75300083"
-        UbuntuPrimaryCameraRole = "chest"
-        UbuntuGripperDevice = "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0"
-    }
-}
-else {
-    @{
-        UbuntuHost = "armstrong-host"
-        UbuntuProject = "/home/tele/onearm_teleop/One-Arm-Teleoperation"
-        UbuntuUdpTarget = "192.168.2.116:5005"
-        RequiredWindowsSourceIp = "192.168.2.130"
-        UbuntuRosDistro = "jazzy"
-        UbuntuOrbbecSetup = "/home/tele/ros2_ws/install/setup.bash"
-        UbuntuLerobotPython = "/home/tele/.venvs/onearm-lerobot/bin/python"
-        UbuntuDatasetDataRoot = (
-            "/home/tele/onearm_teleop/One-Arm-Teleoperation/" +
-            "datasets/onearm_Tele"
-        )
-        UbuntuHeadSerial = "CPCD7530003J"
-        UbuntuWristSerial = "CPCBC5300077"
-        UbuntuPrimaryCameraRole = "head"
-        UbuntuGripperDevice = "/dev/serial/by-id/usb-1a86_USB_Single_Serial_5ABB000800-if00"
-    }
-}
-foreach ($name in $profileDefaults.Keys) {
-    if ([string]::IsNullOrWhiteSpace((Get-Variable -Name $name).Value)) {
-        Set-Variable -Name $name -Value $profileDefaults[$name]
-    }
+$collector = Join-Path $PSScriptRoot "start_lingbot_va_teleop_collection.ps1"
+if (-not (Test-Path -LiteralPath $collector -PathType Leaf)) {
+    throw "Persistent teleoperation collector is missing: $collector"
 }
 
-$script:RemoteStackStarted = $false
-$script:SenderProcess = $null
-$script:ReadyFile = $null
-$script:SenderSessionPathFile = $null
-$script:SenderLogFile = $null
-$script:SenderScriptFile = $null
-$script:NormalSenderExit = $false
-$script:LaunchFailed = $false
-$script:DatasetCaptureStarted = $false
-$script:EpisodeRecordingStarted = $false
-
-function Invoke-CheckedSsh {
-    param([Parameter(Mandatory = $true)][string]$RemoteCommand)
-
-    $sshArguments = Get-SshArguments
-    & ssh.exe @sshArguments `
-        $UbuntuHost `
-        $RemoteCommand
-    if ($LASTEXITCODE -ne 0) {
-        throw "SSH command failed with exit code $LASTEXITCODE."
-    }
-}
-
-function Get-SshArguments {
-    $arguments = @(
-        "-o", "BatchMode=yes",
-        "-o", "ConnectTimeout=8",
-        "-o", "ServerAliveInterval=15",
-        "-o", "ServerAliveCountMax=8",
-        "-o", "TCPKeepAlive=yes",
-        "-b", $script:WindowsSourceIp
-    )
-    if (-not [string]::IsNullOrWhiteSpace($SshIdentityFile)) {
-        if (-not (Test-Path -LiteralPath $SshIdentityFile -PathType Leaf)) {
-            throw "SSH identity file is missing: $SshIdentityFile"
-        }
-        $arguments += @("-i", $SshIdentityFile)
-    }
-    return $arguments
-}
-
-function Get-UdpSourceAddress {
-    param([Parameter(Mandatory = $true)][string]$Target)
-
-    $hostPart = ($Target -split ":", 2)[0]
-    $client = [System.Net.Sockets.UdpClient]::new()
-    try {
-        $client.Connect($hostPart, 5005)
-        return ([System.Net.IPEndPoint]$client.Client.LocalEndPoint).Address.ToString()
-    }
-    finally {
-        $client.Dispose()
-    }
-}
-
-function Assert-MotionNetworkPath {
-    param(
-        [Parameter(Mandatory = $true)][string]$Target,
-        [Parameter(Mandatory = $true)][string]$SourceIp
-    )
-
-    $localAddress = Get-NetIPAddress `
-        -AddressFamily IPv4 `
-        -IPAddress $SourceIp `
-        -ErrorAction SilentlyContinue
-    if ($null -eq $localAddress) {
-        throw (
-            "Required motion source address {0} is not configured on Windows. " +
-            "No camera or robot process was started."
-        ) -f $SourceIp
-    }
-
-    $hostPart = ($Target -split ":", 2)[0]
-    & ping.exe -n 2 -w 1000 -S $SourceIp $hostPart *> $null
-    if ($LASTEXITCODE -ne 0) {
-        throw (
-            "Wired motion path {0} -> {1} is unreachable. No camera or " +
-            "robot process was started. Check the cable/switch/Ubuntu " +
-            "Ethernet link; do not fall back to Wi-Fi for teleoperation."
-        ) -f $SourceIp, $hostPart
-    }
-}
-
-function Stop-RemoteStack {
-    if (-not $script:RemoteStackStarted) {
-        return
-    }
-    Write-Host ""
-    Write-Host "Stopping Ubuntu mapping, servo mode, gripper, robot enable and power..."
-    $sshArguments = Get-SshArguments
-    & ssh.exe @sshArguments `
-        $UbuntuHost `
-        "cd $remoteProject && ${remoteEnvironment}bash tools/ubuntu_full_teleop_stack.sh stop"
-    if ($LASTEXITCODE -ne 0) {
-        Write-Warning "Ubuntu did not fully confirm shutdown. Press the physical emergency stop and inspect the Ubuntu logs."
-    }
-    $script:RemoteStackStarted = $false
-}
-
-function Stop-DatasetCapture {
-    if (-not $script:DatasetCaptureStarted) {
-        return
-    }
-    Write-Host ""
-    Write-Host "Stopping passive episode recorder and the two dataset cameras..."
-    $sshArguments = Get-SshArguments
-    & ssh.exe @sshArguments `
-        $UbuntuHost `
-        "cd $remoteProject && ${remoteEnvironment}bash tools/ubuntu_dataset_episode.sh stop"
-    if ($LASTEXITCODE -ne 0) {
-        Write-Warning (
-            "Ubuntu did not fully confirm dataset capture shutdown. " +
-            "Inspect tools/ubuntu_dataset_episode.sh status."
-        )
-    }
-    $script:DatasetCaptureStarted = $false
-}
-
-function Remove-WindowsSenderSession {
-    if (
-        $null -eq $script:SenderSessionPathFile -or
-        -not (Test-Path -LiteralPath $script:SenderSessionPathFile -PathType Leaf)
-    ) {
-        throw "Windows sender did not report its session directory."
-    }
-    $reported = (Get-Content -LiteralPath $script:SenderSessionPathFile -Raw).Trim()
-    if ([string]::IsNullOrWhiteSpace($reported)) {
-        throw "Windows sender reported an empty session directory."
-    }
-    $recordingsRoot = [IO.Path]::GetFullPath((Join-Path $repoRoot "recordings"))
-    $sessionDirectory = [IO.Path]::GetFullPath($reported)
-    if (
-        [IO.Path]::GetDirectoryName($sessionDirectory) -ne $recordingsRoot -or
-        -not (Test-Path -LiteralPath $sessionDirectory -PathType Container)
-    ) {
-        throw "Refusing to discard unexpected Windows path: $sessionDirectory"
-    }
-    $item = Get-Item -LiteralPath $sessionDirectory -Force
-    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-        throw "Refusing to discard a reparse-point session: $sessionDirectory"
-    }
-    Remove-Item -LiteralPath $sessionDirectory -Recurse -Force
-    Write-Host "WINDOWS_SENDER_SESSION_DISCARDED=$sessionDirectory"
-}
-
-function Show-SenderLogTail {
-    if (
-        $null -eq $script:SenderLogFile -or
-        -not (Test-Path -LiteralPath $script:SenderLogFile -PathType Leaf)
-    ) {
-        Write-Host "No ZLink2 sender log file was created."
-        return
-    }
-    Write-Host ""
-    Write-Host "--- ZLink2 sender log (last 80 lines) ---"
-    Get-Content -LiteralPath $script:SenderLogFile -Tail 80
-}
-
-function Wait-SenderBaselineCaptured {
-    param([int]$TimeoutSeconds = 180)
-
-    Write-Host ""
-    Write-Host "Waiting for the ZLink2 sender window to capture Enter/baseline..."
-    Write-Host "If you do not see that sender window, press Ctrl+C here and tell me."
-    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
-    while ((Get-Date) -lt $deadline) {
-        if (
-            $null -ne $script:SenderSessionPathFile -and
-            (Test-Path -LiteralPath $script:SenderSessionPathFile -PathType Leaf)
-        ) {
-            $reported = (
-                Get-Content -LiteralPath $script:SenderSessionPathFile -Raw
-            ).Trim()
-            if (-not [string]::IsNullOrWhiteSpace($reported)) {
-                Write-Host "SENDER_BASELINE_CAPTURED=$reported"
-                return
-            }
-        }
-        if ($null -ne $script:SenderProcess -and $script:SenderProcess.HasExited) {
-            Show-SenderLogTail
-            throw (
-                "ZLink2 sender exited before capturing Enter/baseline " +
-                "(exit code $($script:SenderProcess.ExitCode))."
-            )
-        }
-        Start-Sleep -Milliseconds 250
-    }
-    Show-SenderLogTail
-    throw (
-        "ZLink2 sender did not capture Enter/baseline within " +
-        "$TimeoutSeconds seconds. Click the sender window and press Enter."
-    )
-}
-
-function Wait-SenderPreviewFrames {
-    param([int]$TimeoutSeconds = 20)
-
-    Write-Host "Waiting for the ZLink2 sender to produce live preview frames..."
-    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
-    while ((Get-Date) -lt $deadline) {
-        if (
-            $null -ne $script:SenderLogFile -and
-            (Test-Path -LiteralPath $script:SenderLogFile -PathType Leaf)
-        ) {
-            $tail = Get-Content -LiteralPath $script:SenderLogFile -Tail 40
-            if ($tail | Select-String -Pattern "frames=.*complete=" -Quiet) {
-                Write-Host "SENDER_PREVIEW_FRAMES_ACTIVE"
-                return
-            }
-        }
-        if ($null -ne $script:SenderProcess -and $script:SenderProcess.HasExited) {
-            Show-SenderLogTail
-            throw (
-                "ZLink2 sender exited before producing live preview frames " +
-                "(exit code $($script:SenderProcess.ExitCode))."
-            )
-        }
-        Start-Sleep -Milliseconds 250
-    }
-    Show-SenderLogTail
-    throw (
-        "ZLink2 sender captured baseline but did not produce live preview " +
-        "frames within $TimeoutSeconds seconds. Check COM port/output in " +
-        "the sender window."
-    )
-}
-
-function ConvertTo-Utf8Base64 {
-    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
-    return [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Value))
-}
-
-function ConvertTo-BashSingleQuoted {
-    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
-
-    if ($Value.Contains("'")) {
-        throw "Remote shell values may not contain single quotes: $Value"
-    }
-    return "'" + $Value + "'"
-}
-
-function Get-RemoteEnvironmentPrefix {
-    $pairs = [ordered]@{}
-    if (-not [string]::IsNullOrWhiteSpace($UbuntuRosDistro)) {
-        $pairs["ROS_DISTRO"] = $UbuntuRosDistro
-    }
-    if (-not [string]::IsNullOrWhiteSpace($UbuntuOrbbecSetup)) {
-        $pairs["ONE_ARM_ORBBEC_SETUP"] = $UbuntuOrbbecSetup
-    }
-    if (-not [string]::IsNullOrWhiteSpace($UbuntuLerobotPython)) {
-        $pairs["ONE_ARM_LEROBOT_PYTHON"] = $UbuntuLerobotPython
-    }
-    if (-not [string]::IsNullOrWhiteSpace($UbuntuDatasetDataRoot)) {
-        $pairs["ONE_ARM_DATASET_DATA_ROOT"] = $UbuntuDatasetDataRoot
-    }
-    if (-not [string]::IsNullOrWhiteSpace($UbuntuHeadSerial)) {
-        $pairs["ONE_ARM_HEAD_SERIAL"] = $UbuntuHeadSerial
-    }
-    if (-not [string]::IsNullOrWhiteSpace($UbuntuWristSerial)) {
-        $pairs["ONE_ARM_WRIST_SERIAL"] = $UbuntuWristSerial
-    }
-    if (-not [string]::IsNullOrWhiteSpace($UbuntuPrimaryCameraRole)) {
-        $pairs["ONE_ARM_PRIMARY_CAMERA_ROLE"] = $UbuntuPrimaryCameraRole
-    }
-    if (-not [string]::IsNullOrWhiteSpace($UbuntuGripperDevice)) {
-        $pairs["ONE_ARM_GRIPPER_DEVICE"] = $UbuntuGripperDevice
-    }
-    $pairs["ONE_ARM_CAMERA_PREVIEW_PORT"] = $CameraPreviewPort.ToString(
-        [System.Globalization.CultureInfo]::InvariantCulture
-    )
-    if ($pairs.Count -eq 0) {
-        return ""
-    }
-
-    $assignments = foreach ($key in $pairs.Keys) {
-        $key + "=" + (ConvertTo-BashSingleQuoted -Value $pairs[$key])
-    }
-    return ($assignments -join " ") + " "
-}
-
-$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$recorder = Join-Path $PSScriptRoot "run_zlink2_recorder.cmd"
-if (-not (Test-Path -LiteralPath $recorder -PathType Leaf)) {
-    throw "Recorder launcher not found: $recorder"
-}
-
-$targetParts = $UbuntuUdpTarget -split ":", 2
-if ($targetParts.Count -ne 2) {
-    throw "UbuntuUdpTarget must be HOST:PORT."
-}
-$cameraPreviewUrl = "http://$($targetParts[0]):$CameraPreviewPort/"
-if ([string]::IsNullOrWhiteSpace($RequiredWindowsSourceIp)) {
-    $windowsSourceIp = Get-UdpSourceAddress -Target $UbuntuUdpTarget
-}
-else {
-    $windowsSourceIp = $RequiredWindowsSourceIp
-}
-$script:WindowsSourceIp = $windowsSourceIp
-Assert-MotionNetworkPath `
-    -Target $UbuntuUdpTarget `
-    -SourceIp $windowsSourceIp
-
-Write-Host "Checking all eight ZLink2 encoder IDs before remote startup..."
-& $recorder `
-    "--port" $ComPort `
-    "--rate-hz" $RateHz.ToString(
-        [System.Globalization.CultureInfo]::InvariantCulture
-    ) `
-    "--probe-only"
-if ($LASTEXITCODE -ne 0) {
-    $message = (
-        "ZLink2 eight-ID preflight failed. The camera, dataset recorder, " +
-        "Ubuntu bridge, gripper, and arm were not started. Check the leader " +
-        "bus power and cabling, then retry."
-    )
-    Write-Host ""
-    Write-Host ("ERROR: " + $message) -ForegroundColor Red
-    exit 2
-}
-
-if ([string]::IsNullOrEmpty($Task)) {
-    $Task = Read-Host "Task prompt (exact text stored in LeRobot)"
-}
-if ([string]::IsNullOrWhiteSpace($Task)) {
-    throw "Task prompt must not be empty."
-}
-if ($Task -ne $Task.Trim()) {
-    throw "Task prompt must not contain leading or trailing whitespace."
-}
-if ($SessionName -notmatch "^[A-Za-z0-9_-]+$") {
-    throw "SessionName may contain only A-Z, a-z, 0-9, _ or -."
-}
-if ($DatasetRepoId -notmatch "^[^/\s]+/[^/\s]+$") {
-    throw "DatasetRepoId must have owner/name form."
-}
-$taskBase64 = ConvertTo-Utf8Base64 -Value $Task
-$operatorBase64 = ConvertTo-Utf8Base64 -Value $Operator
-$remoteProject = ConvertTo-BashSingleQuoted -Value $UbuntuProject
-$remoteEnvironment = Get-RemoteEnvironmentPrefix
-$script:ReadyFile = Join-Path `
-    ([System.IO.Path]::GetTempPath()) `
-    ("one_arm_teleop_ready_{0}.flag" -f $PID)
-$script:SenderSessionPathFile = Join-Path `
-    ([System.IO.Path]::GetTempPath()) `
-    ("one_arm_teleop_sender_session_{0}.txt" -f $PID)
-$script:SenderLogFile = Join-Path `
-    ([System.IO.Path]::GetTempPath()) `
-    ("one_arm_teleop_sender_{0}.log" -f $PID)
-$script:SenderScriptFile = Join-Path `
-    ([System.IO.Path]::GetTempPath()) `
-    ("one_arm_teleop_sender_{0}.ps1" -f $PID)
-if (Test-Path -LiteralPath $script:ReadyFile) {
-    Remove-Item -LiteralPath $script:ReadyFile -Force
-}
-if (Test-Path -LiteralPath $script:SenderSessionPathFile) {
-    Remove-Item -LiteralPath $script:SenderSessionPathFile -Force
-}
-if (Test-Path -LiteralPath $script:SenderLogFile) {
-    Remove-Item -LiteralPath $script:SenderLogFile -Force
-}
-if (Test-Path -LiteralPath $script:SenderScriptFile) {
-    Remove-Item -LiteralPath $script:SenderScriptFile -Force
-}
-
-Write-Host "============================================================"
-Write-Host "One-Arm Teleoperation / PowerShell launcher"
-Write-Host "Deployment profile: $DeploymentProfile"
-Write-Host "Windows source IP : $windowsSourceIp"
-Write-Host "Transport policy  : wired-only (UDP and SSH bound to source IP)"
-Write-Host "SSH control path  : $UbuntuHost"
-Write-Host "UDP motion target : $UbuntuUdpTarget"
-Write-Host "Ubuntu project    : $UbuntuProject"
-Write-Host "ZLink2 port       : $ComPort"
-Write-Host "Task              : $Task"
-Write-Host "Dataset repo id   : $DatasetRepoId"
-Write-Host "Primary camera    : $UbuntuPrimaryCameraRole / $UbuntuHeadSerial"
-Write-Host "Wrist camera SN   : $UbuntuWristSerial"
-Write-Host "Camera preview    : $cameraPreviewUrl"
-Write-Host "Gripper device    : $UbuntuGripperDevice"
-if (-not [string]::IsNullOrWhiteSpace($UbuntuDatasetDataRoot)) {
-    Write-Host "Dataset root      : $UbuntuDatasetDataRoot"
-}
-Write-Host "============================================================"
-Write-Host "Stage 0 starts only the head/right-wrist RGB cameras and checks 30 FPS."
-Write-Host "Unselected cameras are excluded. The robot will NOT move."
-
-try {
-    # Treat the result as uncertain until SSH finishes. Cleanup is safe even
-    # when startup stopped at the SSD/camera preflight.
-    $script:DatasetCaptureStarted = $true
-    Invoke-CheckedSsh `
-        "cd $remoteProject && ${remoteEnvironment}bash tools/ubuntu_dataset_episode.sh start"
-
-    if (-not $NoCameraPreview) {
-        Write-Host "Opening the two-camera preview (chest left / right wrist right)..."
-        $edgeCandidates = @(
-            "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe",
-            "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe"
-        )
-        $edgePath = $edgeCandidates |
-            Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
-            Select-Object -First 1
-        if ($null -ne $edgePath) {
-            Start-Process `
-                -FilePath $edgePath `
-                -ArgumentList @("--new-window", $cameraPreviewUrl) | Out-Null
-        }
-        else {
-            Start-Process $cameraPreviewUrl | Out-Null
-        }
-    }
-
-    Write-Host ""
-    Write-Host "Stage 1 starts ROS 2 robot interfaces only. The robot will NOT move."
-    # Treat the result as uncertain until the remote start command finishes.
-    # If SSH drops after creating any PID file, finally will still issue stop.
-    $script:RemoteStackStarted = $true
-    Invoke-CheckedSsh `
-        "cd $remoteProject && ${remoteEnvironment}bash tools/ubuntu_full_teleop_stack.sh start '$windowsSourceIp'"
-
-    Write-Host ""
-    Write-Host "Starting passive ROS bag recording..."
-    $script:EpisodeRecordingStarted = $true
-    Invoke-CheckedSsh `
-        "cd $remoteProject && ${remoteEnvironment}bash tools/ubuntu_dataset_episode.sh record-start '$SessionName' '$taskBase64' '$operatorBase64'"
-
-    $arguments = @(
-        "--port", $ComPort,
-        "--rate-hz", $RateHz.ToString(
-            [System.Globalization.CultureInfo]::InvariantCulture
-        ),
-        "--udp-target", $UbuntuUdpTarget,
-        "--udp-bind-host", $windowsSourceIp,
-        # Keep the recorder alive across serial dropouts. The Ubuntu motion
-        # watchdog still stops the robot after three seconds without packets.
-        "--max-consecutive-incomplete", "0",
-        "--deadman",
-        "--activation-file", $script:ReadyFile,
-        "--session-path-file", $script:SenderSessionPathFile,
-        "--session-name", $SessionName
-    )
-    $quotedArguments = foreach ($argument in $arguments) {
-        "'" + ($argument -replace "'", "''") + "'"
-    }
-    $quotedRecorder = "'" + ($recorder -replace "'", "''") + "'"
-    $argumentArrayLiteral = "@(`n        " + ($quotedArguments -join ",`n        ") + "`n    )"
-    $senderCommand = @'
-$Host.UI.RawUI.WindowTitle = "ZLink2 Teleoperation Sender"
-$ErrorActionPreference = "Continue"
-$logPath = '__SENDER_LOG__'
-"ZLINK2_SENDER_SCRIPT_STARTED=$(Get-Date -Format o)" |
-    Tee-Object -FilePath $logPath
-$recorder = __RECORDER__
-$arguments = __ARGUMENT_ARRAY__
-try {
-    & $recorder @arguments 2>&1 | Tee-Object -FilePath $logPath -Append
-    $code = $LASTEXITCODE
-}
-catch {
-    $_ | Out-String | Tee-Object -FilePath $logPath -Append
-    $code = 1
-}
-"ZLINK2_SENDER_EXIT_CODE=$code" | Tee-Object -FilePath $logPath -Append
-exit $code
-'@
-    $senderCommand = $senderCommand.Replace("__RECORDER__", $quotedRecorder)
-    $senderCommand = $senderCommand.Replace(
-        "__ARGUMENT_ARRAY__",
-        $argumentArrayLiteral
-    )
-    $senderCommand = $senderCommand.Replace(
-        "__SENDER_LOG__",
-        ($script:SenderLogFile -replace "'", "''")
-    )
-    Set-Content `
-        -LiteralPath $script:SenderScriptFile `
-        -Value $senderCommand `
-        -Encoding UTF8
-
-    Write-Host ""
-    Write-Host "A dedicated ZLink2 sender window will open now."
-    Write-Host "ZLink2 sender log: $script:SenderLogFile"
-    Write-Host "In that window, place the leader arm comfortably and press Enter once."
-    Write-Host "Do not press Space until it displays REMOTE STACK READY."
-    $script:SenderProcess = Start-Process `
-        -FilePath "powershell.exe" `
-        -ArgumentList @(
-            "-NoProfile",
-            "-ExecutionPolicy", "Bypass",
-            "-File", $script:SenderScriptFile
-        ) `
-        -WorkingDirectory $repoRoot `
-        -WindowStyle Normal `
-        -PassThru
-
-    Wait-SenderBaselineCaptured
-    Wait-SenderPreviewFrames
-
-    Write-Host ""
-    Write-Host "Stage 2 is waiting for fresh UDP preview and robot checks."
-    Write-Host "After these checks, the robot WILL be powered and enabled; the follower gripper"
-    Write-Host "will first open to 2000, then the arm enters servo mode,"
-    Write-Host "but it still receives no motion target until you press Space."
-    Invoke-CheckedSsh `
-        "cd $remoteProject && ${remoteEnvironment}bash tools/ubuntu_full_teleop_stack.sh arm"
-
-    Set-Content `
-        -LiteralPath $script:ReadyFile `
-        -Value "FULL_TELEOP_READY" `
-        -Encoding Ascii
-    Write-Host ""
-    Write-Host "READY gate opened. Follow the sender window:"
-    Write-Host "  Space      start teleoperation"
-    Write-Host "  Space again / Esc / Ctrl+C   STOP"
-    Write-Host "Keep the physical emergency stop within reach."
-
-    $script:SenderProcess.WaitForExit()
-    if ($script:SenderProcess.ExitCode -ne 0) {
-        throw "ZLink2 sender exited with code $($script:SenderProcess.ExitCode)."
-    }
-    $script:NormalSenderExit = $true
-}
-catch {
-    $script:LaunchFailed = $true
-    Write-Host ""
-    Write-Host ("ERROR: " + $_.Exception.Message) -ForegroundColor Red
-    Show-SenderLogTail
-}
-finally {
-    if (
-        $null -ne $script:SenderProcess -and
-        -not $script:SenderProcess.HasExited -and
-        -not $script:NormalSenderExit
-    ) {
-        & taskkill.exe /PID $script:SenderProcess.Id /T /F 2>$null | Out-Null
-    }
-    Stop-RemoteStack
-    Stop-DatasetCapture
-    if ($null -ne $script:ReadyFile -and (Test-Path -LiteralPath $script:ReadyFile)) {
-        Remove-Item -LiteralPath $script:ReadyFile -Force
-    }
-}
-
-if ($script:EpisodeRecordingStarted) {
-    $outcome = "failure"
-    $userDiscardRequested = $false
-    if ($script:NormalSenderExit -and -not $script:LaunchFailed) {
-        while ($true) {
-            $answer = (
-                Read-Host "Episode outcome: S=save, F=discard and delete"
-            ).Trim().ToLowerInvariant()
-            if ($answer -in @("s", "success")) {
-                $outcome = "success"
-                break
-            }
-            if ($answer -in @("f", "failure")) {
-                $outcome = "failure"
-                $userDiscardRequested = $true
-                break
-            }
-            Write-Host "Please enter S or F."
-        }
+# The shared collector's own default is the separate LingBot source root.
+# Retain the historical SmolVLA/LeRobot dataset location unless the operator
+# deliberately supplies a different root.
+if ([string]::IsNullOrWhiteSpace($UbuntuDatasetDataRoot)) {
+    $UbuntuDatasetDataRoot = if ($DeploymentProfile -eq "new-humble") {
+        "/home/nvidia/work/telop/onearm_Tele"
     }
     else {
-        Write-Host (
-            "The session did not end normally; the raw episode and Windows " +
-            "sender recording will be discarded. Only saved S episodes are kept."
-        )
-        $userDiscardRequested = $true
-    }
-    try {
-        if ($userDiscardRequested) {
-            Invoke-CheckedSsh `
-                "cd $remoteProject && ${remoteEnvironment}bash tools/ubuntu_dataset_episode.sh discard '$SessionName'"
-            if (
-                $null -ne $script:SenderSessionPathFile -and
-                (Test-Path -LiteralPath $script:SenderSessionPathFile -PathType Leaf)
-            ) {
-                Remove-WindowsSenderSession
-            }
-            else {
-                Write-Host (
-                    "WINDOWS_SENDER_SESSION_NOT_CREATED; no local sender " +
-                    "recording directory needs deletion."
-                )
-            }
-            Write-Host "EPISODE_DISCARDED_NO_DATA_KEPT"
-        }
-        else {
-            Invoke-CheckedSsh `
-                "cd $remoteProject && ${remoteEnvironment}bash tools/ubuntu_dataset_episode.sh finalize '$outcome' '$DatasetRepoId' '$SessionName'"
-        }
-    }
-    catch {
-        $script:LaunchFailed = $true
-        Write-Host ""
-        if ($userDiscardRequested) {
-            Write-Host (
-                "EPISODE DISCARD ERROR: " + $_.Exception.Message
-            ) -ForegroundColor Red
-            Write-Host (
-                "Discard was not fully confirmed. Inspect both the Ubuntu " +
-                "episode path and the Windows recordings directory."
-            )
-        }
-        else {
-            Write-Host (
-                "DATASET FINALIZATION ERROR: " + $_.Exception.Message
-            ) -ForegroundColor Red
-            Write-Host (
-                "A success export failed. The raw ROS bag may still be " +
-                "present so it can be inspected or exported manually."
-            )
-        }
+        "/home/tele/onearm_teleop/One-Arm-Teleoperation/datasets/onearm_Tele"
     }
 }
 
-if (
-    $null -ne $script:SenderSessionPathFile -and
-    (Test-Path -LiteralPath $script:SenderSessionPathFile)
-) {
-    Remove-Item -LiteralPath $script:SenderSessionPathFile -Force
+$forward = @{
+    ComPort = $ComPort
+    DeploymentProfile = $DeploymentProfile
+    UbuntuHost = $UbuntuHost
+    UbuntuProject = $UbuntuProject
+    UbuntuUdpTarget = $UbuntuUdpTarget
+    RequiredWindowsSourceIp = $RequiredWindowsSourceIp
+    UbuntuRosDistro = $UbuntuRosDistro
+    UbuntuOrbbecSetup = $UbuntuOrbbecSetup
+    UbuntuLerobotPython = $UbuntuLerobotPython
+    UbuntuDatasetDataRoot = $UbuntuDatasetDataRoot
+    UbuntuHeadSerial = $UbuntuHeadSerial
+    UbuntuWristSerial = $UbuntuWristSerial
+    UbuntuPrimaryCameraRole = $UbuntuPrimaryCameraRole
+    UbuntuGripperDevice = $UbuntuGripperDevice
+    SshIdentityFile = $SshIdentityFile
+    RateHz = $RateHz
+    Task = $Task
+    Operator = $Operator
+    DatasetRepoId = $DatasetRepoId
+    CameraPreviewPort = $CameraPreviewPort
+    SessionPrefix = "smolvla_teleop"
+    CollectorLabel = "SmolVLA / LeRobot"
+}
+if ($NoCameraPreview) {
+    $forward.NoCameraPreview = $true
 }
 
-if ($script:LaunchFailed -or -not $script:NormalSenderExit) {
-    exit 1
-}
-Write-Host ""
-Write-Host "Teleoperation ended; robot shutdown and dataset capture stop were confirmed."
+& $collector @forward
+exit $LASTEXITCODE
