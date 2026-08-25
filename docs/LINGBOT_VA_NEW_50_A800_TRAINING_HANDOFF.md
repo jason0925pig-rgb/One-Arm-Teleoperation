@@ -316,6 +316,200 @@ episode id、训练卡数/步数、最终 checkpoint、所有已知限制（尤�
 
 这些完成前，不能声称“已经得到新的 LingBot adapter/checkpoint”。
 
+## 8. 训练完成后：回传 Orin 并准备次日运行（全程不许上电/使能）
+
+本节是给训练执行者的交付要求。它的目标是让次日到现场时**软件、权重和只读检查已经齐全**，
+而不是让 A800 或 Orin 在无人看护时控制机械臂。
+
+### 8.1 回传的内容和 Orin 目录
+
+完成训练后，不能只复制一个 `diffusion_pytorch_model.safetensors` 就认为可部署。Orin 运行时还需要
+与训练完全匹配的 base bundle（`vae/`、`text_encoder/`、`tokenizer/`、配置）以及本次新训练的
+transformer。
+
+建议在 Orin 建立一个完全独立的运行目录：
+
+```bash
+export ORIN_ROOT=/home/nvidia/work/telop
+export ORIN_LINGBOT=${ORIN_ROOT}/lingbot_va_runtime/20260825_new_task_50
+export ORIN_BASE=${ORIN_LINGBOT}/base_bundle
+export ORIN_CHECKPOINT=${ORIN_LINGBOT}/checkpoint
+export ORIN_RUNTIME=${ORIN_LINGBOT}/runtime
+mkdir -p "$ORIN_BASE" "$ORIN_CHECKPOINT" "$ORIN_RUNTIME"
+```
+
+回传后目录必须满足：
+
+```text
+$ORIN_LINGBOT/
+├── base_bundle/
+│   ├── vae/
+│   ├── text_encoder/
+│   ├── tokenizer/
+│   └── （基础模型所需的其余只读配置）
+├── checkpoint/
+│   └── transformer/
+│       ├── diffusion_pytorch_model.safetensors
+│       └── config.json
+├── runtime/
+│   ├── resolved_runtime_config.yaml
+│   ├── model_manifest.json
+│   └── README_RUNBOOK.md
+└── SHA256SUMS
+```
+
+`checkpoint/transformer/` 必须来自本次 `$A800_OUT` 的最终 checkpoint，其他内容来自**同一个**
+`$LINGBOT_BASE` 基础模型。不要把旧 SmolVLA checkpoint、QGF critic 或其他任务的 LingBot
+checkpoint 放入该目录。
+
+### 8.2 允许笔记本中转
+
+若 A800 和 Orin 之间没有可用的 SSH 路由，可以由 Windows 笔记本中转；这完全可行。
+使用可恢复传输，不要用 ZIP 后再解压来掩盖文件缺失。
+
+PowerShell 示例（路径和私钥按现场实际配置替换）：
+
+```powershell
+# 1) A800 -> Windows：下载最终 checkpoint 与运行所需 base bundle。
+$stage = "$env:USERPROFILE\Downloads\lingbot_va_20260825_new_task_50"
+New-Item -ItemType Directory -Force -Path $stage | Out-Null
+scp -r -i "$env:USERPROFILE\.ssh\a800_zwwl_user3_ed25519" `
+  zwwl_user3@175.102.130.70:/ssd/hanbo/TNNLS_2026/outputs/lingbot_va/20260825_new_task_50_full_transformer `
+  $stage
+
+# 2) Windows -> Orin：上传到一个新目录；不要覆盖已有模型。
+scp -r -i "$env:USERPROFILE\.ssh\one_arm_teleop_ed25519" `
+  $stage\* nvidia@192.168.2.170:/home/nvidia/work/telop/lingbot_va_runtime/20260825_new_task_50/
+```
+
+大文件建议使用 WinSCP 的 SFTP 队列/续传，或把上述 `scp` 替换为 `rsync --partial --append-verify`。
+回传后，在 A800、Windows（如中转）和 Orin 对最终 checkpoint 计算 SHA256；三者必须一致。
+
+### 8.3 Orin 只读验收：不连控制、不上电、不使能
+
+以下测试只允许加载文件、解码录像、运行模型前向或检查 ROS topic 类型；不得调用：
+
+```text
+/right_arm/set_powered_on=true
+/right_arm/set_robot_enabled=true
+/right_arm/set_motion_enabled=true
+/right_arm/set_gripper_enabled=true
+任何 servo_j / servo mode / gripper motion 请求
+```
+
+必须完成并保存日志：
+
+1. `sha256sum -c SHA256SUMS`；
+2. Python 能 import LingBot runtime、加载 VAE / text encoder / 新 transformer；
+3. 用一个保存的双相机 observation 做**离线**前向，检查动作 tensor 全为有限数，且 action 维度与
+   本项目转换约定匹配；
+4. 用录制 MP4 验证 chest 与 wrist 的时间戳、解码 fps、色彩顺序和 resize/crop 与训练一致；
+5. 若需要 ROS 集成，只能启动 `dry_run=true` 且全部 `hardware_*_authorized=false` 的进程，确认
+   其不发布控制消息；
+6. 在 `runtime/README_RUNBOOK.md` 写出检查结果、模型 SHA256、实际推理延迟和所有失败原因。
+
+没有现场人员明确执行 `ARM` / `MOVE`，也没有实体急停在手边时，禁止突破上述边界。
+
+## 9. LingBot 的 15 Hz 异步推理与夹爪状态机要求
+
+### 9.1 不要把 SmolVLA 客户端原样当成 LingBot 客户端
+
+上一次可运行的 SmolVLA 异步运行参考代码在另一个仓库：
+
+```text
+E:/AAA__Github_Project/SmolVLA-with-QGF/
+├── tools/smolvla_orin_env.sh
+├── tools/run_smolvla_orin.sh
+├── tools/start_smolvla_policy_server.sh
+├── tools/start_smolvla_ros_client.sh
+├── lerobot_robot_armstrong_ros2/src/lerobot_robot_armstrong_ros2/armstrongros2.py
+├── lerobot_robot_armstrong_ros2/src/lerobot_robot_armstrong_ros2/configuration_armstrong_ros2.py
+└── lerobot_robot_armstrong_ros2/src/lerobot_robot_armstrong_ros2/smolvla_guard.py
+```
+
+这些代码可复用**系统结构和保护逻辑**，不能直接把 SmolVLA gRPC / action-chunk 协议接到
+LingBot。LingBot runtime 必须单独实现一个适配层，并保留与上面引用文件相同的可观测日志：
+时间戳、图像新鲜度、当前实际关节、原始模型动作、处理后动作、已执行动作、队列长度与停止原因。
+
+建议把新代码放在 Orin 的独立运行目录（或对应的独立 Git 分支）下，例如：
+
+```text
+/home/nvidia/work/telop/lingbot_va_runtime/20260825_new_task_50/runtime/
+```
+
+不要修改 `SmolVLA-with-QGF` 的已有 rollout 脚本，也不要让 LingBot 使用 QGF 代码路径。
+
+### 9.2 固定频率和异步队列
+
+次日的初始运行配置应为：
+
+```text
+相机采集：30 FPS（chest 与 right-wrist 保持原始同步流）
+LingBot observation / action 消费：15 Hz，周期 66.667 ms
+底层 JAKA 目标平滑：125 Hz / 8 ms（仅在现场授权运动后启用）
+```
+
+15 Hz 不表示把 30 FPS 视频变成两倍速：每个 15 Hz tick 只选择一对最新且时间戳匹配的 RGB 帧，
+保留真实时间轴。推理 worker 必须异步工作：
+
+1. 首次 observation 触发第一个 action chunk 推理；**第一个 chunk 尚未准备好时不得允许运动**；
+2. 开始执行 chunk 的第一个动作后，立即用最新 observation 在后台请求下一 chunk；
+3. 执行线程每 66.667 ms 消费一个已验证动作；推理线程永远不能阻塞它；
+4. 新 chunk 到达后，只在清楚记录其 observation 时间戳、动作索引和替换点的情况下切换；
+5. 若队列耗尽、图像/关节状态过期或推理异常，关闭**软件 action gate**，保持当前目标；不要用旧动作
+   无限追赶，也不要自动上电/使能来“恢复”。
+
+SmolVLA 过去是 50 action / chunk、15 Hz（约 3.33 秒覆盖）；LingBot 的 action chunk 长度必须从
+新模型实际输出确定。初始值不得盲目复制 50：先记录 warm-up 后 p50/p95 推理延迟，再选择能覆盖
+`p95 延迟 × 15 Hz + 安全余量` 的 chunk；将该值、预取时点和实际队列低水位写入
+`resolved_runtime_config.yaml`。
+
+### 9.3 夹爪语义（必须与训练数据一致）
+
+统一规定：模型归一化输出 `0 = open`，`1 = closed`。处理规则必须为：
+
+```text
+raw <= 0.15  -> 请求 OPEN
+0.15 < raw < 0.85 -> 保持上一已确认状态
+raw >= 0.85  -> 请求 CLOSE
+```
+
+为防止 chunk 边界抖动，沿用已验证的时间状态机参数：
+
+```text
+confirmation_frames       = 10 个连续的 15 Hz action（约 0.67 s）
+min_state_dwell_seconds   = 2.0 s
+contact_hold_seconds      = 3.0 s
+```
+
+这套实现可参考：
+
+```text
+E:/AAA__Github_Project/SmolVLA-with-QGF/lerobot_robot_armstrong_ros2/
+  src/lerobot_robot_armstrong_ros2/configuration_armstrong_ros2.py
+  src/lerobot_robot_armstrong_ros2/smolvla_guard.py
+```
+
+注意 ROS 夹爪服务的布尔值历史上表示 `requested_open`，而模型内部表示的是 `gripper_closed`；
+适配层必须只在一个位置做显式反转，并为每一次状态转换打印：原始值、候选状态、确认计数、最终
+`requested_open`、接触保持原因和时间戳。不得通过“忽略 alarm”绕过夹爪硬件故障。
+
+### 9.4 明天之前必须存在的交付物
+
+训练执行者在交付前至少给出：
+
+```text
+1. A800 50 episode 传输/转换 manifest（含 TCP 状态）；
+2. 最终 checkpoint 与 SHA256；
+3. Orin 完整 base + checkpoint 文件清单；
+4. LingBot 独立 runtime 代码、15 Hz 异步队列日志、离线前向测试；
+5. 固定 0.15 / 0.85 夹爪阈值与 10 帧确认的单元测试；
+6. 明确证明没有在交付过程中调用 power / enable / servo / gripper motion；
+7. 现场首次授权运动前的人工 checklist。
+```
+
+只有上述项目都完成，才可称为“明天可由人在实体急停旁进行首次受控运行”。
+
 ## 参考
 
 - [LingBot-VA upstream repository](https://github.com/robbyant/lingbot-va)
