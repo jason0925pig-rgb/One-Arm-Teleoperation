@@ -15,9 +15,9 @@
 # The parcel and water-bottle invocations are unchanged.
 #
 # Demonstration protocol agreed for this task:
-#   grasp the mug BY THE HANDLE -> lift -> place on the marked target zone.
-#   First version: handle initial orientation fixed, only the mug's start
-#   position varies between episodes.
+#   grasp the mug BY THE HANDLE -> lift -> place ON TOP of the purple box.
+#   First version: handle initial orientation and box position fixed, only
+#   the mug's start position varies between episodes.
 
 $ErrorActionPreference = "Stop"
 
@@ -27,8 +27,8 @@ if (-not (Test-Path -LiteralPath $collector -PathType Leaf)) {
 }
 
 # Frozen task text (base64 so no console codepage can corrupt it):
-# 夹住杯柄把杯子放在指定位置
-$taskB64 = "5aS55L2P5p2v5p+E5oqK5p2v5a2Q5pS+5Zyo5oyH5a6a5L2N572u"
+# 把水杯放到紫色的箱子上
+$taskB64 = "5oqK5rC05p2v5pS+5Yiw57Sr6Imy55qE566x5a2Q5LiK"
 $task = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($taskB64))
 
 $forward = @{
