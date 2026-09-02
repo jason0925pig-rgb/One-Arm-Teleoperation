@@ -260,7 +260,14 @@ function Wait-SenderBaseline {
     $deadline = (Get-Date).AddSeconds(180)
     while ((Get-Date) -lt $deadline) {
         if (Test-Path -LiteralPath $script:SenderPathFile -PathType Leaf) {
-            $candidate = (Get-Content -LiteralPath $script:SenderPathFile -Raw).Trim()
+            # zlink2_leader_recorder.py writes this with encoding="utf-8" and no BOM
+            # (write_text_atomic, tools/zlink2_leader_recorder.py:80).  Windows
+            # PowerShell 5.1 defaults Get-Content to the ANSI codepage, so a repo
+            # path containing non-ASCII characters came back mojibake and the
+            # Remove-CurrentLocalSession guard then rejected its own session dir.
+            # Do NOT copy this to the $SenderLog read below: that file is written
+            # by Tee-Object, which is UTF-16LE in PowerShell 5.1.
+            $candidate = (Get-Content -LiteralPath $script:SenderPathFile -Raw -Encoding UTF8).Trim()
             if (-not [string]::IsNullOrWhiteSpace($candidate)) {
                 $script:CurrentLocalSession = $candidate
                 Write-Host "SENDER_BASELINE_CAPTURED=$candidate"
@@ -435,7 +442,17 @@ try {
         }
         else {
             Invoke-CheckedSsh "cd $remoteProject && ${remoteEnvironment}bash tools/ubuntu_dataset_episode.sh discard '$($script:CurrentEpisode)'"
-            Remove-CurrentLocalSession
+            # The leader-session guard must never end the whole collection run.
+            # Its job is to refuse deleting an unexpected path, not to abort a
+            # session that may already hold dozens of saved episodes.  Warn and
+            # carry on; the stray directory is inert leader data.
+            try {
+                Remove-CurrentLocalSession
+            }
+            catch {
+                Write-Warning "Leader session dir was left in place: $($_.Exception.Message)"
+                $script:CurrentLocalSession = ""
+            }
             Write-Host "ROUND_DISCARDED=$($script:CurrentEpisode)"
         }
         $script:CurrentEpisode = ""
