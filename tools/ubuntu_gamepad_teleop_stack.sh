@@ -106,24 +106,28 @@ start_stack() {
   echo "GAMEPAD_STACK_STARTED_NO_MOTION"
   echo "Expected Windows source: ${GAMEPAD_SOURCE_IP}:${GAMEPAD_UDP_PORT}"
 }
-arm_stack() {
+prepare_stack() {
   alive arm && alive gripper && alive bridge || { echo "ERROR: stack is not running" >&2; exit 1; }
   require_healthy
-  call_bool /teleop/set_enabled true
+  # Keep the UDP command gate and servo closed while preparing hardware.
+  # The bridge watchdog only runs after its gate opens, so this avoids a
+  # false timeout while the operator is still positioning their hands.
+  call_bool /teleop/set_enabled false || true
+  close_motion
   call_bool /right_arm/set_powered_on true || true; wait_status robot_powered_on=1 30
   call_bool /right_arm/set_robot_enabled true || true; wait_status robot_enabled=1 30
   call_bool /right_arm/set_gripper_enabled true
   call_bool /right_arm/set_gripper_open true
-  call_bool /right_arm/set_motion_enabled true; wait_status motion_enabled=1 10
-  echo "GAMEPAD_TELEOP_READY: no target is sent until gamepad button[4] is pressed."
+  wait_status motion_enabled=0 10
+  echo "GAMEPAD_HARDWARE_PREPARED: powered, enabled and gripper open; press button[4] to enter servo."
 }
-round_arm() {
+
+motion_start() {
+  alive arm && alive gripper && alive bridge || { echo "ERROR: stack is not running" >&2; exit 1; }
   require_healthy
   call_bool /teleop/set_enabled true
-  call_bool /right_arm/set_gripper_enabled true
-  call_bool /right_arm/set_gripper_open true
   call_bool /right_arm/set_motion_enabled true; wait_status motion_enabled=1 10
-  echo "GAMEPAD_ROUND_READY"
+  echo "GAMEPAD_SERVO_READY"
 }
 round_stop() { call_bool /teleop/set_enabled false || true; close_motion; wait_status motion_enabled=0 10; echo "GAMEPAD_ROUND_STOPPED_SERVO_EXITED"; }
 stop_stack() { shutdown_hardware; stop_component bridge; stop_component gripper; stop_component arm; echo "GAMEPAD_STACK_STOPPED"; }
@@ -131,10 +135,11 @@ stop_stack() { shutdown_hardware; stop_component bridge; stop_component gripper;
 case "${ACTION}" in
   preflight) known_conflict; echo "GAMEPAD_PREFLIGHT_OK" ;;
   start) start_stack ;;
-  arm) arm_stack ;;
-  round-arm) round_arm ;;
+  # arm/round-arm are retained as compatibility aliases for old callers.
+  arm|round-arm|prepare) prepare_stack ;;
+  motion-start) motion_start ;;
   round-stop) round_stop ;;
   stop) stop_stack ;;
   status) status ;;
-  *) echo "Usage: $0 {preflight|start|arm|round-arm|round-stop|stop|status}" >&2; exit 2 ;;
+  *) echo "Usage: $0 {preflight|start|prepare|motion-start|round-stop|stop|status}" >&2; exit 2 ;;
 esac

@@ -115,13 +115,20 @@ exit `$LASTEXITCODE
             throw "Gamepad sender did not become ready; log=$senderLog"
         }
         Start-Sleep -Seconds 1
-        if ($round -eq 1) {
-            Write-Host "Applying attended power/enable/servo gates. No movement until button[4]."
-            Invoke-Orin "cd $orinProjectQuoted && $envPrefix bash tools/ubuntu_gamepad_teleop_stack.sh arm"
-        } else {
-            Invoke-Orin "cd $orinProjectQuoted && $envPrefix bash tools/ubuntu_gamepad_teleop_stack.sh round-arm"
+        Write-Host "Preparing power, enable and an open gripper. Servo remains OFF until button[4]."
+        Invoke-Orin "cd $orinProjectQuoted && $envPrefix bash tools/ubuntu_gamepad_teleop_stack.sh prepare"
+        Write-Host "ROUND PREPARED: centre all axes; button[4] enters servo; button[4] again stops."
+        $activationDeadline = (Get-Date).AddHours(1)
+        while ((Get-Date) -lt $activationDeadline) {
+            if ($senderProcess.HasExited) { throw "Gamepad sender exited before servo start (code $($senderProcess.ExitCode)); log=$senderLog" }
+            if ((Get-Content $senderLog -Tail 30 -ErrorAction SilentlyContinue) -match "GAMEPAD_ACTIVE") { break }
+            Start-Sleep -Milliseconds 100
         }
-        Write-Host "ROUND READY: centre all axes; button[4] starts; button[4] again stops."
+        if (-not ((Get-Content $senderLog -Tail 30 -ErrorAction SilentlyContinue) -match "GAMEPAD_ACTIVE")) {
+            throw "Timed out waiting for button[4] to start servo; log=$senderLog"
+        }
+        Invoke-Orin "cd $orinProjectQuoted && $envPrefix bash tools/ubuntu_gamepad_teleop_stack.sh motion-start"
+        Write-Host "SERVO LIVE: move the sticks; button[5] toggles gripper; button[4] stops this round."
         $senderProcess.WaitForExit()
         if ($senderProcess.ExitCode -ne 0) { throw "Gamepad sender failed (code $($senderProcess.ExitCode)); log=$senderLog" }
         Invoke-Orin "cd $orinProjectQuoted && $envPrefix bash tools/ubuntu_gamepad_teleop_stack.sh round-stop"

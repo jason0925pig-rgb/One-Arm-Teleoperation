@@ -204,6 +204,8 @@ def main() -> None:
     previous_buttons = 0
     period = 1.0 / args.rate_hz
     previous_time = time.monotonic()
+    last_input_report = 0.0
+    last_reported_axes: tuple[float, ...] | None = None
 
     def send(kind: str, positions=None):
         nonlocal sequence
@@ -253,6 +255,20 @@ def main() -> None:
                 print("GAMEPAD_GRIPPER=" + ("OPEN" if gripper_open else "CLOSED"), flush=True)
             axes = np.array([apply_deadzone(v, 0.15) for v in logical_axes(info)])
             if active:
+                now_for_report = time.monotonic()
+                report_axes = tuple(float(v) for v in axes.round(3))
+                if (report_axes != last_reported_axes or
+                        now_for_report - last_input_report >= 0.5):
+                    print(
+                        "GAMEPAD_INPUT "
+                        f"LX={report_axes[0]:+.3f} LY={report_axes[1]:+.3f} "
+                        f"RX={report_axes[2]:+.3f} RY={report_axes[3]:+.3f} "
+                        f"DPAD_X={report_axes[4]:+.3f} DPAD_Y={report_axes[5]:+.3f} "
+                        f"buttons=0x{buttons:X}",
+                        flush=True,
+                    )
+                    last_input_report = now_for_report
+                    last_reported_axes = report_axes
                 if waiting_center:
                     if not np.any(axes):
                         waiting_center = False
