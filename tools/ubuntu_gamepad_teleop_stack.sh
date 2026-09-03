@@ -58,7 +58,13 @@ call_bool() {
 status() { timeout 4 ros2 topic echo --once --full-length /right_arm/safety_status 2>/dev/null || true; }
 wait_status() {
   local token="$1" deadline=$((SECONDS + ${2:-15})) out
-  while ((SECONDS < deadline)); do out="$(status)"; grep -Fq "${token}" <<<"${out}" && { printf '%s\n' "${out}"; return 0; }; sleep .3; done
+  # A fresh ros2 CLI subscriber can first receive the previous status sample
+  # (for example motion_enabled=0 immediately after enabling). Keep one
+  # subscriber open until the requested current state actually arrives.
+  while ((SECONDS < deadline)); do
+    out="$(timeout 3 bash -o pipefail -c "ros2 topic echo --full-length /right_arm/safety_status 2>/dev/null | grep -m1 -F '${token}'" || true)"
+    [[ -n "${out}" ]] && { printf '%s\n' "${out}"; return 0; }
+  done
   echo "ERROR: safety status did not reach ${token}" >&2; return 1
 }
 require_healthy() {

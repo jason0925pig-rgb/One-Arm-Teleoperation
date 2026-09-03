@@ -9,6 +9,7 @@ param(
     [string]$WindowsSourceIp = "192.168.2.131",
     [string]$OrinHost = "armstrong-orin",
     [string]$OrinUdpTarget = "192.168.2.170:5010",
+    [string]$PreviewUrl = "http://192.168.2.170:8088",
     [string]$OrinProject = "/home/nvidia/work/telop/One-Arm-Teleoperation",
     [string]$DatasetRoot = "/home/nvidia/work/telop/onearm_Tele"
 )
@@ -85,6 +86,8 @@ try {
     Invoke-Orin "cd $orinProjectQuoted && $envPrefix bash tools/ubuntu_gamepad_teleop_stack.sh preflight"
     Invoke-Orin "cd $orinProjectQuoted && $envPrefix bash tools/ubuntu_dataset_episode.sh start"
     $datasetStarted = $true
+    Start-Process $PreviewUrl
+    Write-Host "Camera preview opened: $PreviewUrl"
     Invoke-Orin "cd $orinProjectQuoted && $envPrefix bash tools/ubuntu_gamepad_teleop_stack.sh start"
     $stackStarted = $true
 

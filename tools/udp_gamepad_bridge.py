@@ -133,7 +133,9 @@ class UdpGamepadBridge(Node):
                 continue
             out = JointState()
             out.header.stamp = self.get_clock().now().to_msg()
-            out.name = [f"right_joint_{i}" for i in range(1, 8)]
+            # safe_one_arm_servo uses the exact names right_joint1..right_joint7.
+            # An underscore here makes it reject every otherwise-valid target.
+            out.name = [f"right_joint{i}" for i in range(1, 8)]
             out.position = positions
             self.command_pub.publish(out)
             self.gripper_pub.publish(Bool(data=bool(packet.get("gripper_open", True))))
