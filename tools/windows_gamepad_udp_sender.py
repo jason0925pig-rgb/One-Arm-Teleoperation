@@ -278,7 +278,13 @@ def main() -> None:
                     now = time.monotonic()
                     elapsed = min(max(now - previous_time, 0.0), 2.0 * period)
                     previous_time = now
-                    translation = np.array([axes[1], axes[3], -axes[0]])
+                    # Operator-facing base-frame mapping, confirmed on the
+                    # physical arm: left stick forward/back is robot
+                    # forward/back; left stick right/left is robot
+                    # right/left; right-stick vertical is up/down.
+                    # The previous mapping was rotated by 90 degrees in the
+                    # table plane and inverted the vertical direction.
+                    translation = np.array([axes[0], -axes[3], axes[1]])
                     rotation = np.array([axes[4], axes[5], axes[2]])
                     if np.any(translation) or np.any(rotation):
                         candidate = target_pose.copy()
