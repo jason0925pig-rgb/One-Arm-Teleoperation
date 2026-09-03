@@ -3,6 +3,7 @@ import socket
 import unittest
 from pathlib import Path
 import sys
+from unittest.mock import patch
 
 TOOLS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOLS_DIR))
@@ -10,9 +11,11 @@ sys.path.insert(0, str(TOOLS_DIR))
 from zlink2_leader_recorder import (
     SpaceToggleLatch,
     UdpTeleopSender,
+    complete_startup_probe,
     control_event_text,
     parse_ipv4_address,
 )
+import zlink2_encoder_mapper as zlink
 
 
 class SpaceToggleLatchTests(unittest.TestCase):
@@ -100,6 +103,27 @@ class UdpBindingTests(unittest.TestCase):
         finally:
             sender.close()
             receiver.close()
+
+
+class StartupProbeTests(unittest.TestCase):
+    def test_read_only_startup_probe_retries_but_requires_one_complete_scan(self) -> None:
+        samples = [
+            zlink.PositionSample(0.0, {0: 100, 1: 101}),
+            zlink.PositionSample(0.2, {index: 100 + index for index in range(8)}),
+        ]
+        with patch(
+            "zlink2_leader_recorder.zlink.scan_positions",
+            side_effect=samples,
+        ) as scan, patch(
+            "zlink2_leader_recorder.time.monotonic",
+            side_effect=(0.0, 0.0),
+        ), patch("zlink2_leader_recorder.time.sleep"):
+            result = complete_startup_probe(
+                object(), tuple(range(8)), timeout=0.03, retry_seconds=8.0
+            )
+
+        self.assertEqual(set(result.pulses), set(range(8)))
+        self.assertEqual(scan.call_count, 2)
 
 
 if __name__ == "__main__":

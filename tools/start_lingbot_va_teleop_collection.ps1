@@ -21,6 +21,10 @@ param(
     [string]$Task = "",
     [string]$Operator = "Lucky",
     [string]$DatasetRepoId = "local/lingbot_va_source",
+    # Allows the same verified multi-round collector to serve another dataset
+    # without mislabelling source episodes as LingBot-specific data.
+    [string]$SessionPrefix = "lingbot_va",
+    [string]$CollectorLabel = "LingBot-VA",
     [ValidateRange(1024, 65535)]
     [int]$CameraPreviewPort = 8088,
     [switch]$NoCameraPreview
@@ -301,10 +305,10 @@ function Wait-SenderPreview {
 function Start-LeaderSender {
     param([Parameter(Mandatory = $true)][string]$EpisodeName, [Parameter(Mandatory = $true)][int]$Round)
     $suffix = "${PID}_${Round}_$([Guid]::NewGuid().ToString('N').Substring(0, 8))"
-    $script:ReadyFile = Join-Path ([IO.Path]::GetTempPath()) "lingbot_va_ready_${suffix}.flag"
-    $script:SenderPathFile = Join-Path ([IO.Path]::GetTempPath()) "lingbot_va_session_${suffix}.txt"
-    $script:SenderLog = Join-Path ([IO.Path]::GetTempPath()) "lingbot_va_sender_${suffix}.log"
-    $script:SenderScript = Join-Path ([IO.Path]::GetTempPath()) "lingbot_va_sender_${suffix}.ps1"
+    $script:ReadyFile = Join-Path ([IO.Path]::GetTempPath()) "teleop_ready_${suffix}.flag"
+    $script:SenderPathFile = Join-Path ([IO.Path]::GetTempPath()) "teleop_session_${suffix}.txt"
+    $script:SenderLog = Join-Path ([IO.Path]::GetTempPath()) "teleop_sender_${suffix}.log"
+    $script:SenderScript = Join-Path ([IO.Path]::GetTempPath()) "teleop_sender_${suffix}.ps1"
     foreach ($path in @($script:ReadyFile, $script:SenderPathFile, $script:SenderLog, $script:SenderScript)) {
         if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
     }
@@ -315,6 +319,10 @@ function Start-LeaderSender {
         "--udp-target", $UbuntuUdpTarget,
         "--udp-bind-host", $windowsSourceIp,
         "--max-consecutive-incomplete", "0",
+        # Enter captures this round's absolute-offset baseline.  A just-opened
+        # USB serial port can need longer than the recorder default for all
+        # eight PRAD replies to settle; retain the strict 8/8 requirement.
+        "--baseline-retry-seconds", "20",
         "--deadman",
         "--activation-file", $script:ReadyFile,
         "--session-path-file", $script:SenderPathFile,
@@ -324,17 +332,17 @@ function Start-LeaderSender {
     )
     $quoted = $senderArguments | ForEach-Object { "'" + ($_ -replace "'", "''") + "'" }
     $senderBody = @"
-`$Host.UI.RawUI.WindowTitle = 'LingBot-VA ZLink2 Teleoperation Sender'
+`$Host.UI.RawUI.WindowTitle = '$($CollectorLabel -replace "'", "''") ZLink2 Teleoperation Sender'
 `$ErrorActionPreference = 'Continue'
 `$logPath = '$($script:SenderLog -replace "'", "''")'
 `$recorder = '$($recorder -replace "'", "''")'
 `$arguments = @(
     $($quoted -join ",`r`n    ")
 )
-'LINGBOT_VA_SENDER_STARTED=' + (Get-Date -Format o) | Tee-Object -FilePath `$logPath
+'TELEOP_SENDER_STARTED=' + (Get-Date -Format o) | Tee-Object -FilePath `$logPath
 & `$recorder @arguments 2>&1 | Tee-Object -FilePath `$logPath -Append
 `$exitCode = `$LASTEXITCODE
-'LINGBOT_VA_SENDER_EXIT_CODE=' + `$exitCode | Tee-Object -FilePath `$logPath -Append
+'TELEOP_SENDER_EXIT_CODE=' + `$exitCode | Tee-Object -FilePath `$logPath -Append
 exit `$exitCode
 "@
     Set-Content -LiteralPath $script:SenderScript -Value $senderBody -Encoding utf8
@@ -374,6 +382,9 @@ if ([string]::IsNullOrWhiteSpace($Task) -or $Task -ne $Task.Trim()) {
 if ($DatasetRepoId -notmatch "^[^/\s]+/[^/\s]+$") {
     throw "DatasetRepoId must have owner/name form."
 }
+if ($SessionPrefix -notmatch "^[A-Za-z0-9_-]+$") {
+    throw "SessionPrefix may contain only A-Z, a-z, 0-9, _ or -."
+}
 $taskBase64 = ConvertTo-Utf8Base64 -Value $Task
 $operatorBase64 = ConvertTo-Utf8Base64 -Value $Operator
 
@@ -385,7 +396,7 @@ if ($LASTEXITCODE -ne 0) {
 
 $previewUrl = "http://$($targetParts[0]):$CameraPreviewPort/"
 Write-Host "============================================================"
-Write-Host "LingBot-VA multi-round teleoperation source collector"
+Write-Host "$CollectorLabel multi-round teleoperation source collector"
 Write-Host "Task            : $Task"
 Write-Host "Dataset source  : $UbuntuDatasetDataRoot"
 Write-Host "LeRobot repo id : $DatasetRepoId"
@@ -408,7 +419,7 @@ try {
 
     while ($true) {
         $round += 1
-        $script:CurrentEpisode = "lingbot_va_$((Get-Date).ToString('yyyyMMdd_HHmmss'))_r$($round.ToString('D3'))"
+        $script:CurrentEpisode = "$SessionPrefix`_$((Get-Date).ToString('yyyyMMdd_HHmmss'))_r$($round.ToString('D3'))"
         $script:CurrentLocalSession = ""
         $script:CurrentRecorderStarted = $true
         Invoke-CheckedSsh "cd $remoteProject && ${remoteEnvironment}bash tools/ubuntu_dataset_episode.sh record-start '$($script:CurrentEpisode)' '$taskBase64' '$operatorBase64'"
@@ -426,7 +437,7 @@ try {
             Invoke-CheckedSsh "cd $remoteProject && ${remoteEnvironment}bash tools/ubuntu_full_teleop_stack.sh round-arm"
         }
         $script:RoundServoActive = $true
-        Set-Content -LiteralPath $script:ReadyFile -Value "LINGBOT_VA_ROUND_READY" -Encoding ascii
+        Set-Content -LiteralPath $script:ReadyFile -Value "TELEOP_ROUND_READY" -Encoding ascii
         Write-Host "REMOTE ROUND READY. Use the sender window: Space starts, Space again ends this round."
 
         $script:SenderProcess.WaitForExit()
