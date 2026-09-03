@@ -126,9 +126,14 @@ prepare_stack() {
 
 motion_start() {
   alive arm && alive gripper && alive bridge || { echo "ERROR: stack is not running" >&2; exit 1; }
-  require_healthy
+  # `safety_status` is a best-effort telemetry topic, not a durable state
+  # store.  Re-subscribing here can receive no message at all while the arm is
+  # perfectly healthy, which used to reject the second B4 press falsely.
+  # The servo-enable service below performs the authoritative live checks for
+  # connection, feedback freshness, power, enable, e-stop, limits, and drag
+  # mode immediately before it enters servo mode.
   call_bool /teleop/set_enabled true
-  call_bool /right_arm/set_motion_enabled true; wait_status motion_enabled=1 10
+  call_bool /right_arm/set_motion_enabled true
   echo "GAMEPAD_SERVO_READY"
 }
 round_stop() { call_bool /teleop/set_enabled false || true; close_motion; echo "GAMEPAD_ROUND_STOPPED_SERVO_EXITED"; }
