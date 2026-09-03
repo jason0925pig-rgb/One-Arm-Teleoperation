@@ -80,6 +80,7 @@ $senderScript = $null
 $servoReadyFile = $null
 $currentEpisode = ""
 $recorderActive = $false
+$preserveCurrentEpisode = $false
 $stackStarted = $false
 $datasetStarted = $false
 $fatal = $false
@@ -153,9 +154,11 @@ exit `$LASTEXITCODE
         if ($result -eq "discard") {
             Invoke-Orin "cd $orinProjectQuoted && $envPrefix bash tools/ubuntu_dataset_episode.sh discard '$currentEpisode'"
         } else {
+            $preserveCurrentEpisode = $true
             Invoke-Orin "cd $orinProjectQuoted && $envPrefix bash tools/ubuntu_dataset_episode.sh finalize '$result' '$DatasetRepoId' '$currentEpisode'"
         }
         $currentEpisode = ""
+        $preserveCurrentEpisode = $false
         Remove-Item -LiteralPath $senderScript -Force -ErrorAction SilentlyContinue
         $senderScript = $null
         Remove-Item -LiteralPath $servoReadyFile -Force -ErrorAction SilentlyContinue
@@ -173,7 +176,11 @@ catch {
         try { Invoke-Orin "cd $orinProjectQuoted && $envPrefix bash tools/ubuntu_dataset_episode.sh record-stop" } catch { Write-Warning $_ }
     }
     if (-not [string]::IsNullOrWhiteSpace($currentEpisode)) {
-        try { Invoke-Orin "cd $orinProjectQuoted && $envPrefix bash tools/ubuntu_dataset_episode.sh discard '$currentEpisode'" } catch { Write-Warning $_ }
+        if ($preserveCurrentEpisode) {
+            Write-Warning "Raw success episode preserved after export failure: $currentEpisode. Review lerobot_export.log and lerobot_export_status.txt on Orin before retrying export."
+        } else {
+            try { Invoke-Orin "cd $orinProjectQuoted && $envPrefix bash tools/ubuntu_dataset_episode.sh discard '$currentEpisode'" } catch { Write-Warning $_ }
+        }
     }
 }
 finally {

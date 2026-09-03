@@ -666,20 +666,39 @@ import cv2
 import rosbag2_py
 print("LEROBOT_EXPORT_ENV_OK")
 PY
-  (
-    flock -n 9 || {
-      echo "ERROR: another LeRobot exporter is writing this dataset." >&2
-      exit 12
-    }
-    "${LEROBOT_PYTHON}" "${PROJECT_ROOT}/tools/export_rosbag_to_lerobot.py" \
-      --episode-dir "${episode_dir}" \
-      --dataset-root "${LEROBOT_ROOT}" \
-      --repo-id "${repo_id}" \
-      --fps 30 \
-      --head-topic "${HEAD_TOPIC}" \
-      --wrist-topic "${WRIST_TOPIC}" \
-      --primary-camera-feature "${PRIMARY_CAMERA_FEATURE}"
-  ) 9>"${RUNTIME_DIR}/lerobot_export.lock"
+  run_export() {
+    local state_skew_ms="$1"
+    (
+      flock -n 9 || {
+        echo "ERROR: another LeRobot exporter is writing this dataset." >&2
+        exit 12
+      }
+      "${LEROBOT_PYTHON}" "${PROJECT_ROOT}/tools/export_rosbag_to_lerobot.py" \
+        --episode-dir "${episode_dir}" \
+        --dataset-root "${LEROBOT_ROOT}" \
+        --repo-id "${repo_id}" \
+        --fps 30 \
+        --head-topic "${HEAD_TOPIC}" \
+        --wrist-topic "${WRIST_TOPIC}" \
+        --primary-camera-feature "${PRIMARY_CAMERA_FEATURE}" \
+        --max-state-skew-ms "${state_skew_ms}" \
+        --max-action-skew-ms "${ONE_ARM_MAX_ACTION_SKEW_MS:-120}"
+    ) 9>"${RUNTIME_DIR}/lerobot_export.lock" 2>&1 | tee -a "${episode_dir}/lerobot_export.log"
+  }
+  local initial_state_skew_ms="${ONE_ARM_MAX_STATE_SKEW_MS:-150}"
+  local retry_state_skew_ms="${ONE_ARM_EXPORT_RETRY_STATE_SKEW_MS:-350}"
+  local used_state_skew_ms="${initial_state_skew_ms}"
+  if ! run_export "${initial_state_skew_ms}"; then
+    echo "LEROBOT_EXPORT_RETRY reason=state_alignment initial_state_skew_ms=${initial_state_skew_ms} retry_state_skew_ms=${retry_state_skew_ms}" >&2
+    if ! run_export "${retry_state_skew_ms}"; then
+      printf 'status=failed\ninitial_state_skew_ms=%s\nretry_state_skew_ms=%s\nraw_episode_preserved=1\n' \
+        "${initial_state_skew_ms}" "${retry_state_skew_ms}" >"${episode_dir}/lerobot_export_status.txt"
+      echo "ERROR: LeRobot export failed after retry; raw episode is preserved: ${episode_dir}" >&2
+      return 15
+    fi
+    used_state_skew_ms="${retry_state_skew_ms}"
+  fi
+  printf 'status=exported\nstate_skew_ms=%s\n' "${used_state_skew_ms}" >"${episode_dir}/lerobot_export_status.txt"
   echo "LEROBOT_EPISODE_EXPORTED"
   echo "LEROBOT_DATASET=${LEROBOT_ROOT}"
 }
