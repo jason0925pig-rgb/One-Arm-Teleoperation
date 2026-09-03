@@ -118,8 +118,10 @@ prepare_stack() {
   call_bool /right_arm/set_robot_enabled true || true; wait_status robot_enabled=1 30
   call_bool /right_arm/set_gripper_enabled true
   call_bool /right_arm/set_gripper_open true
-  wait_status motion_enabled=0 10
-  echo "GAMEPAD_HARDWARE_PREPARED: powered, enabled and gripper open; press button[4] to enter servo."
+  # The successful motion-disable service response is authoritative.  A
+  # newly-created topic subscriber can miss a non-latched motion_enabled=0
+  # sample, which previously caused a false startup failure here.
+  echo "GAMEPAD_HARDWARE_PREPARED: powered, enabled and gripper open; servo is off."
 }
 
 motion_start() {
@@ -129,7 +131,7 @@ motion_start() {
   call_bool /right_arm/set_motion_enabled true; wait_status motion_enabled=1 10
   echo "GAMEPAD_SERVO_READY"
 }
-round_stop() { call_bool /teleop/set_enabled false || true; close_motion; wait_status motion_enabled=0 10; echo "GAMEPAD_ROUND_STOPPED_SERVO_EXITED"; }
+round_stop() { call_bool /teleop/set_enabled false || true; close_motion; echo "GAMEPAD_ROUND_STOPPED_SERVO_EXITED"; }
 stop_stack() { shutdown_hardware; stop_component bridge; stop_component gripper; stop_component arm; echo "GAMEPAD_STACK_STOPPED"; }
 
 case "${ACTION}" in

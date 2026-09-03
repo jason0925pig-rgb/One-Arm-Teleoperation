@@ -72,7 +72,7 @@ Write-Host "Windows HID gamepad -> wired UDP -> new Orin (.170)"
 Write-Host "Task: $Task"
 Write-Host "Dataset: $DatasetRoot; existing task episodes=200-213"
 Write-Host "New saved rounds append after the current highest index"
-Write-Host "Gamepad id=$GamepadId; button[4]=start/finish; button[5]=gripper"
+Write-Host "Gamepad id=$GamepadId; button[4]=initialize/start/finish; button[5]=gripper"
 Write-Host "============================================================"
 
 $senderProcess = $null
@@ -96,10 +96,13 @@ try {
         Invoke-Orin "cd $orinProjectQuoted && $envPrefix bash tools/ubuntu_dataset_episode.sh record-start '$currentEpisode' '$taskBase64' '$operatorBase64'"
         $recorderActive = $true
         $suffix = "${PID}_${round}_$([Guid]::NewGuid().ToString('N').Substring(0,8))"
+        Write-Host "Preparing power, enable and an open gripper. Servo remains OFF."
+        Invoke-Orin "cd $orinProjectQuoted && $envPrefix bash tools/ubuntu_gamepad_teleop_stack.sh prepare"
         $senderLog = Join-Path ([IO.Path]::GetTempPath()) "windows_gamepad_${suffix}.log"
         $senderScript = Join-Path ([IO.Path]::GetTempPath()) "windows_gamepad_${suffix}.ps1"
         $body = @"
 `$Host.UI.RawUI.WindowTitle = 'Windows Gamepad -> Armstrong Orin'
+Write-Host 'HARDWARE ENABLED: gripper is open and servo is OFF. Centre all sticks, then press button[4] to initialize.' -ForegroundColor Green
 & '$($WindowsPython -replace "'", "''")' '$($senderPath -replace "'", "''")' --device-id '$GamepadId' --bind-host '$WindowsSourceIp' --target '$OrinUdpTarget' --urdf '$($urdfPath -replace "'", "''")' 2>&1 | Tee-Object -FilePath '$($senderLog -replace "'", "''")'
 exit `$LASTEXITCODE
 "@
@@ -107,24 +110,31 @@ exit `$LASTEXITCODE
         $senderProcess = Start-Process powershell.exe -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $senderScript) -WorkingDirectory $repoRoot -WindowStyle Normal -PassThru
         $deadline = (Get-Date).AddSeconds(10)
         while ((Get-Date) -lt $deadline) {
-            if ($senderProcess.HasExited) { throw "Gamepad sender exited before arming (code $($senderProcess.ExitCode)); log=$senderLog" }
+            if ($senderProcess.HasExited) { throw "Gamepad sender exited before initialization (code $($senderProcess.ExitCode)); log=$senderLog" }
             if ((Test-Path $senderLog -PathType Leaf) -and ((Get-Content $senderLog -Tail 20) -match "WINDOWS_GAMEPAD_READY")) { break }
             Start-Sleep -Milliseconds 200
         }
         if (-not (Test-Path $senderLog) -or -not ((Get-Content $senderLog -Tail 20) -match "WINDOWS_GAMEPAD_READY")) {
             throw "Gamepad sender did not become ready; log=$senderLog"
         }
-        Start-Sleep -Seconds 1
-        Write-Host "Preparing power, enable and an open gripper. Servo remains OFF until button[4]."
-        Invoke-Orin "cd $orinProjectQuoted && $envPrefix bash tools/ubuntu_gamepad_teleop_stack.sh prepare"
-        Write-Host "ROUND PREPARED: centre all axes; button[4] enters servo; button[4] again stops."
+        Write-Host "ROUND PREPARED: centre all axes, then press button[4] once to capture the initial pose."
+        $initializationDeadline = (Get-Date).AddHours(1)
+        while ((Get-Date) -lt $initializationDeadline) {
+            if ($senderProcess.HasExited) { throw "Gamepad sender exited before initialization (code $($senderProcess.ExitCode)); log=$senderLog" }
+            if ((Get-Content $senderLog -Tail 30 -ErrorAction SilentlyContinue) -match "GAMEPAD_INITIALIZED") { break }
+            Start-Sleep -Milliseconds 100
+        }
+        if (-not ((Get-Content $senderLog -Tail 30 -ErrorAction SilentlyContinue) -match "GAMEPAD_INITIALIZED")) {
+            throw "Timed out waiting for button[4] initialization; log=$senderLog"
+        }
+        Write-Host "INITIALIZATION SUCCESS: press button[4] again to start teleoperation immediately."
         $activationDeadline = (Get-Date).AddHours(1)
         while ((Get-Date) -lt $activationDeadline) {
             if ($senderProcess.HasExited) { throw "Gamepad sender exited before servo start (code $($senderProcess.ExitCode)); log=$senderLog" }
-            if ((Get-Content $senderLog -Tail 30 -ErrorAction SilentlyContinue) -match "GAMEPAD_ACTIVE") { break }
+            if ((Get-Content $senderLog -Tail 30 -ErrorAction SilentlyContinue) -match "GAMEPAD_TELEOP_START_REQUESTED") { break }
             Start-Sleep -Milliseconds 100
         }
-        if (-not ((Get-Content $senderLog -Tail 30 -ErrorAction SilentlyContinue) -match "GAMEPAD_ACTIVE")) {
+        if (-not ((Get-Content $senderLog -Tail 30 -ErrorAction SilentlyContinue) -match "GAMEPAD_TELEOP_START_REQUESTED")) {
             throw "Timed out waiting for button[4] to start servo; log=$senderLog"
         }
         Invoke-Orin "cd $orinProjectQuoted && $envPrefix bash tools/ubuntu_gamepad_teleop_stack.sh motion-start"

@@ -198,8 +198,12 @@ def main() -> None:
     current_q = None
     command_q = None
     target_pose = None
+    # Three deliberate attended stages:
+    #   1) first B4 captures an FK baseline only;
+    #   2) second B4 asks the parent launcher to enter servo;
+    #   3) third B4 stops the round.
+    initialized = False
     active = False
-    waiting_center = False
     gripper_open = True
     previous_buttons = 0
     period = 1.0 / args.rate_hz
@@ -236,6 +240,7 @@ def main() -> None:
             start_edge = bool(buttons & (1 << 4)) and not bool(previous_buttons & (1 << 4))
             grip_edge = bool(buttons & (1 << 5)) and not bool(previous_buttons & (1 << 5))
             previous_buttons = buttons
+            axes = np.array([apply_deadzone(v, 0.15) for v in logical_axes(info)])
             if start_edge:
                 if active:
                     send("stop")
@@ -243,17 +248,21 @@ def main() -> None:
                     return
                 if current_q is None:
                     print("WAITING_FOR_ORIN_JOINT_STATE", flush=True)
-                else:
+                elif np.any(axes):
+                    print("GAMEPAD_INIT_REQUIRES_CENTERED_AXES", flush=True)
+                elif not initialized:
                     command_q = current_q.copy()
                     target_pose, _ = kinematics.fk_jacobian(command_q)
-                    active = True
-                    waiting_center = True
+                    initialized = True
                     previous_time = time.monotonic()
-                    print("GAMEPAD_ACTIVE: centre sticks/D-pad before moving", flush=True)
+                    print("GAMEPAD_INITIALIZED: baseline captured; press button[4] again to enter teleoperation.", flush=True)
+                else:
+                    active = True
+                    previous_time = time.monotonic()
+                    print("GAMEPAD_TELEOP_START_REQUESTED", flush=True)
             if grip_edge and active:
                 gripper_open = not gripper_open
                 print("GAMEPAD_GRIPPER=" + ("OPEN" if gripper_open else "CLOSED"), flush=True)
-            axes = np.array([apply_deadzone(v, 0.15) for v in logical_axes(info)])
             if active:
                 now_for_report = time.monotonic()
                 report_axes = tuple(float(v) for v in axes.round(3))
@@ -269,34 +278,28 @@ def main() -> None:
                     )
                     last_input_report = now_for_report
                     last_reported_axes = report_axes
-                if waiting_center:
-                    if not np.any(axes):
-                        waiting_center = False
-                        previous_time = time.monotonic()
-                        print("GAMEPAD_CENTERED: control live", flush=True)
-                else:
-                    now = time.monotonic()
-                    elapsed = min(max(now - previous_time, 0.0), 2.0 * period)
-                    previous_time = now
-                    # Operator-facing base-frame mapping, confirmed on the
+                now = time.monotonic()
+                elapsed = min(max(now - previous_time, 0.0), 2.0 * period)
+                previous_time = now
+                # Operator-facing base-frame mapping, confirmed on the
                     # physical arm: left stick forward/back is robot
                     # forward/back; left stick right/left is robot
                     # right/left; right-stick vertical is up/down.
                     # The previous mapping was rotated by 90 degrees in the
                     # table plane and inverted the vertical direction.
-                    translation = np.array([axes[0], -axes[3], axes[1]])
-                    rotation = np.array([axes[4], axes[5], axes[2]])
-                    if np.any(translation) or np.any(rotation):
-                        candidate = target_pose.copy()
-                        candidate[:3, 3] += translation * 0.03 * elapsed
-                        candidate[:3, :3] = target_pose[:3, :3] @ axis_rotation(
-                            rotation if np.linalg.norm(rotation) else np.array([1.,0.,0.]),
-                            np.linalg.norm(rotation) * math.radians(20.0) * elapsed,
-                        )
-                        success, solved = kinematics.solve(candidate, command_q)
-                        if success:
-                            command_q, target_pose = solved, candidate
-                    send("command", command_q)
+                translation = np.array([axes[0], -axes[3], axes[1]])
+                rotation = np.array([axes[4], axes[5], axes[2]])
+                if np.any(translation) or np.any(rotation):
+                    candidate = target_pose.copy()
+                    candidate[:3, 3] += translation * 0.03 * elapsed
+                    candidate[:3, :3] = target_pose[:3, :3] @ axis_rotation(
+                        rotation if np.linalg.norm(rotation) else np.array([1.,0.,0.]),
+                        np.linalg.norm(rotation) * math.radians(20.0) * elapsed,
+                    )
+                    success, solved = kinematics.solve(candidate, command_q)
+                    if success:
+                        command_q, target_pose = solved, candidate
+                send("command", command_q)
             else:
                 send("hello")
             delay = period - (time.monotonic() - started)
