@@ -182,6 +182,11 @@ def main() -> None:
     parser.add_argument("--urdf", required=True)
     parser.add_argument("--probe-only", action="store_true")
     parser.add_argument("--rate-hz", type=float, default=31.25)
+    parser.add_argument(
+        "--servo-ready-file",
+        default="",
+        help="Local readiness marker written by the parent after Orin servo startup.",
+    )
     args = parser.parse_args()
     first = gamepad_state(args.device_id)
     kinematics = UrdfKinematics(Path(args.urdf), "base_link_jaka_right", "rt")
@@ -204,6 +209,8 @@ def main() -> None:
     #   3) third B4 stops the round.
     initialized = False
     active = False
+    servo_ready = False
+    servo_ready_file = Path(args.servo_ready_file) if args.servo_ready_file else None
     gripper_open = True
     previous_buttons = 0
     period = 1.0 / args.rate_hz
@@ -241,6 +248,9 @@ def main() -> None:
             grip_edge = bool(buttons & (1 << 5)) and not bool(previous_buttons & (1 << 5))
             previous_buttons = buttons
             axes = np.array([apply_deadzone(v, 0.15) for v in logical_axes(info)])
+            if initialized and not servo_ready and servo_ready_file is not None and servo_ready_file.exists():
+                servo_ready = True
+                print("GAMEPAD_SERVO_READY: press button[4] to begin teleoperation.", flush=True)
             if start_edge:
                 if active:
                     send("stop")
@@ -253,9 +263,19 @@ def main() -> None:
                 elif not initialized:
                     command_q = current_q.copy()
                     target_pose, _ = kinematics.fk_jacobian(command_q)
+                    # Run the solver once at the captured pose.  It validates
+                    # the current FK/IK chain before servo is armed, rather
+                    # than making the first operator motion pay this setup.
+                    solved_ok, solved_q = kinematics.solve(target_pose, command_q)
+                    if not solved_ok:
+                        print("GAMEPAD_INIT_IK_FAILED", flush=True)
+                        continue
+                    command_q = solved_q
                     initialized = True
                     previous_time = time.monotonic()
-                    print("GAMEPAD_INITIALIZED: baseline captured; press button[4] again to enter teleoperation.", flush=True)
+                    print("GAMEPAD_INITIALIZED: baseline and IK check complete; waiting for servo preparation.", flush=True)
+                elif not servo_ready:
+                    print("GAMEPAD_WAITING_FOR_SERVO_READY", flush=True)
                 else:
                     active = True
                     previous_time = time.monotonic()

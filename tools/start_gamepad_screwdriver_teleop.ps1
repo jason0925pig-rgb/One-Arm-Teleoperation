@@ -77,6 +77,7 @@ Write-Host "============================================================"
 
 $senderProcess = $null
 $senderScript = $null
+$servoReadyFile = $null
 $currentEpisode = ""
 $recorderActive = $false
 $stackStarted = $false
@@ -100,10 +101,12 @@ try {
         Invoke-Orin "cd $orinProjectQuoted && $envPrefix bash tools/ubuntu_gamepad_teleop_stack.sh prepare"
         $senderLog = Join-Path ([IO.Path]::GetTempPath()) "windows_gamepad_${suffix}.log"
         $senderScript = Join-Path ([IO.Path]::GetTempPath()) "windows_gamepad_${suffix}.ps1"
+        $servoReadyFile = Join-Path ([IO.Path]::GetTempPath()) "windows_gamepad_servo_ready_${suffix}.flag"
+        Remove-Item -LiteralPath $servoReadyFile -Force -ErrorAction SilentlyContinue
         $body = @"
 `$Host.UI.RawUI.WindowTitle = 'Windows Gamepad -> Armstrong Orin'
 Write-Host 'HARDWARE ENABLED: gripper is open and servo is OFF. Centre all sticks, then press button[4] to initialize.' -ForegroundColor Green
-& '$($WindowsPython -replace "'", "''")' '$($senderPath -replace "'", "''")' --device-id '$GamepadId' --bind-host '$WindowsSourceIp' --target '$OrinUdpTarget' --urdf '$($urdfPath -replace "'", "''")' 2>&1 | Tee-Object -FilePath '$($senderLog -replace "'", "''")'
+& '$($WindowsPython -replace "'", "''")' '$($senderPath -replace "'", "''")' --device-id '$GamepadId' --bind-host '$WindowsSourceIp' --target '$OrinUdpTarget' --urdf '$($urdfPath -replace "'", "''")' --servo-ready-file '$($servoReadyFile -replace "'", "''")' 2>&1 | Tee-Object -FilePath '$($senderLog -replace "'", "''")'
 exit `$LASTEXITCODE
 "@
         Set-Content -LiteralPath $senderScript -Value $body -Encoding utf8
@@ -127,7 +130,10 @@ exit `$LASTEXITCODE
         if (-not ((Get-Content $senderLog -Tail 30 -ErrorAction SilentlyContinue) -match "GAMEPAD_INITIALIZED")) {
             throw "Timed out waiting for button[4] initialization; log=$senderLog"
         }
-        Write-Host "INITIALIZATION SUCCESS: press button[4] again to start teleoperation immediately."
+        Write-Host "INITIALIZATION SUCCESS: preparing and validating servo now; wait for the child window's SERVO READY message."
+        Invoke-Orin "cd $orinProjectQuoted && $envPrefix bash tools/ubuntu_gamepad_teleop_stack.sh motion-start"
+        Set-Content -LiteralPath $servoReadyFile -Value "ready" -Encoding ascii
+        Write-Host "SERVO READY: press button[4] again to begin teleoperation immediately."
         $activationDeadline = (Get-Date).AddHours(1)
         while ((Get-Date) -lt $activationDeadline) {
             if ($senderProcess.HasExited) { throw "Gamepad sender exited before servo start (code $($senderProcess.ExitCode)); log=$senderLog" }
@@ -137,7 +143,6 @@ exit `$LASTEXITCODE
         if (-not ((Get-Content $senderLog -Tail 30 -ErrorAction SilentlyContinue) -match "GAMEPAD_TELEOP_START_REQUESTED")) {
             throw "Timed out waiting for button[4] to start servo; log=$senderLog"
         }
-        Invoke-Orin "cd $orinProjectQuoted && $envPrefix bash tools/ubuntu_gamepad_teleop_stack.sh motion-start"
         Write-Host "SERVO LIVE: move the sticks; button[5] toggles gripper; button[4] stops this round."
         $senderProcess.WaitForExit()
         if ($senderProcess.ExitCode -ne 0) { throw "Gamepad sender failed (code $($senderProcess.ExitCode)); log=$senderLog" }
@@ -153,6 +158,7 @@ exit `$LASTEXITCODE
         $currentEpisode = ""
         Remove-Item -LiteralPath $senderScript -Force -ErrorAction SilentlyContinue
         $senderScript = $null
+        Remove-Item -LiteralPath $servoReadyFile -Force -ErrorAction SilentlyContinue
         if ($round -lt $EpisodeCount) {
             $next = Read-Host "Press Enter for the next round, or Q to stop"
             if ($next.Trim().ToLowerInvariant() -eq "q") { break }
@@ -173,6 +179,7 @@ catch {
 finally {
     if ($null -ne $senderProcess -and -not $senderProcess.HasExited) { & taskkill.exe /PID $senderProcess.Id /T /F 2>$null | Out-Null }
     if ($null -ne $senderScript) { Remove-Item -LiteralPath $senderScript -Force -ErrorAction SilentlyContinue }
+    if ($null -ne $servoReadyFile) { Remove-Item -LiteralPath $servoReadyFile -Force -ErrorAction SilentlyContinue }
     if ($stackStarted) { try { Invoke-Orin "cd $orinProjectQuoted && $envPrefix bash tools/ubuntu_gamepad_teleop_stack.sh stop" } catch { Write-Warning $_ } }
     if ($datasetStarted) { try { Invoke-Orin "cd $orinProjectQuoted && $envPrefix bash tools/ubuntu_dataset_episode.sh stop" } catch { Write-Warning $_ } }
 }
