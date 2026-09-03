@@ -288,7 +288,11 @@ def main() -> None:
                     # The previous mapping was rotated by 90 degrees in the
                     # table plane and inverted the vertical direction.
                 translation = np.array([axes[0], -axes[3], axes[1]])
-                rotation = np.array([axes[4], axes[5], axes[2]])
+                # Physical D-pad calibration: the original X/Y assignment
+                # made Up/Down tilt left/right and Left/Right tilt down/up.
+                # Map D-pad Up/Down to the physical up/down tilt channel and
+                # D-pad Left/Right to the physical left/right channel.
+                rotation = np.array([axes[5], -axes[4], axes[2]])
                 if np.any(translation) or np.any(rotation):
                     candidate = target_pose.copy()
                     candidate[:3, 3] += translation * 0.03 * elapsed
